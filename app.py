@@ -11,8 +11,8 @@ st.caption("Probability engine for the direction of the next completed candle. R
 
 with st.sidebar:
     st.header("Settings")
-    symbol = st.text_input("Pair", "BTCUSDT").upper().strip()
-    interval = st.selectbox("Timeframe", ["1","3","5","15","30","60"], index=2)
+    symbol = st.text_input("Pair", "ACE_USDT").upper().strip()
+    timeframe = st.selectbox("Timeframe", ["15 minutues", "4 hours"], index=0) interval = "Min15" if timeframe == "15 minutes" else "Hour4"
     history = st.slider("Historical candles", 1000, 10000, 5000, step=500)
     threshold = st.slider("Minimum probability for a signal", 0.50, 0.90, 0.65, 0.01)
     run = st.button("Run / Refresh", type="primary")
