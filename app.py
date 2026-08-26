@@ -22,7 +22,7 @@ st.title("📈 NextCandle AI — V6")
 
 st.caption(
     "AI prediction of the NEXT 15-minute candle. "
-    "Direction + estimated open/close range. "
+    "Direction + estimated next-candle price range. "
     "Research/paper-trading only."
 )
 
@@ -107,12 +107,34 @@ if run or "result" not in st.session_state:
                 df
             )
 
-            probs, ml_signal = predict_next(
+            # -------------------------------------------------
+            # COMPATIBILITY WITH CURRENT MODEL.PY
+            # -------------------------------------------------
+
+            prediction_result = predict_next(
                 models,
                 df,
                 feature_cols,
                 threshold
             )
+
+            if isinstance(
+                prediction_result,
+                tuple
+            ) and len(prediction_result) >= 2:
+
+                probs = prediction_result[0]
+                ml_signal = prediction_result[1]
+
+            else:
+
+                raise ValueError(
+                    "predict_next() returned an unexpected result."
+                )
+
+            # -------------------------------------------------
+            # WALK-FORWARD BACKTEST
+            # -------------------------------------------------
 
             bt = walk_forward_backtest(
                 df,
@@ -196,11 +218,13 @@ if not pd.notna(atr_pct) or atr_pct <= 0:
     atr_pct = 0.002
 
 
-# Probability-weighted expected direction
+# Probability-weighted direction
+
 direction_score = (
-    probs["bullish"]
-    - probs["bearish"]
+    probs.get("bullish", 0.0)
+    - probs.get("bearish", 0.0)
 )
+
 
 expected_move_pct = (
     direction_score * atr_pct
@@ -213,16 +237,17 @@ estimated_close = (
 )
 
 
-# Expected candle range
 range_pct = max(
     atr_pct,
     0.0005
 )
 
+
 estimated_high = (
     current_close
     * (1 + range_pct)
 )
+
 
 estimated_low = (
     current_close
@@ -246,9 +271,9 @@ best_direction = max(
     key=probs.get
 )
 
-confidence = probs[
-    best_direction
-]
+confidence = float(
+    probs[best_direction]
+)
 
 
 if ml_signal == "BULLISH":
@@ -293,9 +318,14 @@ c2.metric(
 )
 
 
+ensemble_count = metrics.get(
+    "ensemble_models",
+    3
+)
+
 c3.metric(
     "🤖 Ensemble",
-    f"{metrics.get('ensemble_models', 3)} models"
+    f"{ensemble_count} models"
 )
 
 
@@ -306,7 +336,7 @@ c4.metric(
 
 
 # =========================================================
-# NEXT CANDLE PRICE ESTIMATE
+# NEXT 15M PRICE ESTIMATE
 # =========================================================
 
 st.divider()
@@ -316,8 +346,8 @@ st.subheader(
 )
 
 st.caption(
-    "These are model-based estimates for the next candle, "
-    "not guaranteed prices."
+    "Model-based estimates for the next candle. "
+    "They are not guaranteed future prices."
 )
 
 
@@ -327,7 +357,7 @@ q1, q2, q3, q4 = st.columns(4)
 with q1:
 
     st.metric(
-        "Current / Expected Open",
+        "Expected Open",
         f"{current_close:.8f}"
     )
 
@@ -395,7 +425,7 @@ with p1:
 
     st.metric(
         "🟢 Bullish",
-        f"{probs['bullish'] * 100:.2f}%"
+        f"{probs.get('bullish', 0) * 100:.2f}%"
     )
 
 
@@ -403,7 +433,7 @@ with p2:
 
     st.metric(
         "⚪ Neutral",
-        f"{probs['neutral'] * 100:.2f}%"
+        f"{probs.get('neutral', 0) * 100:.2f}%"
     )
 
 
@@ -411,7 +441,7 @@ with p3:
 
     st.metric(
         "🔴 Bearish",
-        f"{probs['bearish'] * 100:.2f}%"
+        f"{probs.get('bearish', 0) * 100:.2f}%"
     )
 
 
@@ -427,23 +457,23 @@ st.subheader(
 
 st.write(
     "V6 is focused specifically on predicting the "
-    "direction of the NEXT 15-minute candle."
+    "NEXT 15-minute candle."
 )
 
 st.write(
-    "It combines multiple machine-learning models "
-    "and averages their probabilities."
+    "The ensemble combines multiple machine-learning "
+    "models and uses their probabilities to determine "
+    "the strongest direction."
 )
 
 st.write(
     "The 4H timeframe is used only as higher-timeframe "
-    "context inside the prediction model."
+    "context for the next 15M prediction."
 )
 
 st.write(
-    "V6 also estimates the next candle's likely close "
-    "and price range using the current price and recent "
-    "volatility."
+    "V6 also provides an estimated next-candle close "
+    "and volatility-based high/low range."
 )
 
 
@@ -455,16 +485,18 @@ if ml_signal == "BULLISH":
 
     st.success(
         f"🎯 V6 prediction: "
-        f"NEXT 15M candle is most likely **BULLISH** "
-        f"with {confidence * 100:.1f}% model confidence."
+        f"NEXT 15M candle is most likely "
+        f"**BULLISH** with "
+        f"{confidence * 100:.1f}% model confidence."
     )
 
 elif ml_signal == "BEARISH":
 
     st.error(
         f"🎯 V6 prediction: "
-        f"NEXT 15M candle is most likely **BEARISH** "
-        f"with {confidence * 100:.1f}% model confidence."
+        f"NEXT 15M candle is most likely "
+        f"**BEARISH** with "
+        f"{confidence * 100:.1f}% model confidence."
     )
 
 else:
@@ -486,6 +518,7 @@ st.subheader(
     "🧭 4H Context Used By The Model"
 )
 
+
 htf_gap = latest.get(
     "htf_ema_gap20",
     np.nan
@@ -498,13 +531,15 @@ if pd.notna(htf_gap):
         f"**{htf_gap * 100:.2f}%**"
     )
 
+
 st.write(
     f"4H bias score: **{htf_score:.0f}**"
 )
 
+
 st.caption(
-    "4H data is context for the NEXT 15M prediction. "
-    "This app is not a separate market-analysis system."
+    "4H data is model context only. "
+    "The app remains focused on the NEXT 15M candle."
 )
 
 
@@ -525,17 +560,17 @@ with left:
 
     st.write(
         f"Holdout accuracy: "
-        f"**{metrics['holdout_accuracy'] * 100:.2f}%**"
+        f"**{metrics.get('holdout_accuracy', 0) * 100:.2f}%**"
     )
 
     st.write(
         f"Training samples: "
-        f"**{metrics['train_samples']:,}**"
+        f"**{metrics.get('train_samples', 0):,}**"
     )
 
     st.write(
         f"Holdout samples: "
-        f"**{metrics['holdout_samples']:,}**"
+        f"**{metrics.get('holdout_samples', 0):,}**"
     )
 
     st.caption(
@@ -552,22 +587,22 @@ with right:
 
     st.write(
         f"Predictions: "
-        f"**{bt['predictions']:,}**"
+        f"**{bt.get('predictions', 0):,}**"
     )
 
     st.write(
         f"Overall accuracy: "
-        f"**{bt['accuracy'] * 100:.2f}%**"
+        f"**{bt.get('accuracy', 0) * 100:.2f}%**"
     )
 
     st.write(
         f"High-confidence signals: "
-        f"**{bt['signals']:,}**"
+        f"**{bt.get('signals', 0):,}**"
     )
 
     st.write(
         f"Signal accuracy: "
-        f"**{bt['signal_accuracy'] * 100:.2f}%**"
+        f"**{bt.get('signal_accuracy', 0) * 100:.2f}%**"
     )
 
 
@@ -587,81 +622,8 @@ with b1:
 
     st.metric(
         "🟢 Bullish",
-        bt["bullish_signals"]
+        bt.get("bullish_signals", 0)
     )
 
     st.write(
-        f"Accuracy: "
-        f"**{bt['bullish_accuracy'] * 100:.2f}%**"
-    )
-
-
-with b2:
-
-    st.metric(
-        "🔴 Bearish",
-        bt["bearish_signals"]
-    )
-
-    st.write(
-        f"Accuracy: "
-        f"**{bt['bearish_accuracy'] * 100:.2f}%**"
-    )
-
-
-with b3:
-
-    st.metric(
-        "⚪ Neutral",
-        bt["neutral_signals"]
-    )
-
-    st.write(
-        f"Accuracy: "
-        f"**{bt['neutral_accuracy'] * 100:.2f}%**"
-    )
-
-
-# =========================================================
-# RECENT CANDLES
-# =========================================================
-
-st.divider()
-
-st.subheader(
-    f"🕯️ Recent {symbol} 15M Candles"
-)
-
-
-display_columns = [
-    "timestamp",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume"
-]
-
-
-available_columns = [
-    c
-    for c in display_columns
-    if c in df.columns
-]
-
-
-st.dataframe(
-    df[available_columns].tail(20),
-    use_container_width=True
-)
-
-
-# =========================================================
-# DISCLAIMER
-# =========================================================
-
-st.caption(
-    "V6 predicts only the NEXT 15-minute candle. "
-    "The displayed confidence and price estimates are "
-    "model estimates and cannot guarantee the future candle."
-)
+       
