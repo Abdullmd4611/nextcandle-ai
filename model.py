@@ -5,11 +5,7 @@ from sklearn.ensemble import (
     HistGradientBoostingClassifier,
     HistGradientBoostingRegressor
 )
-
-from sklearn.metrics import (
-    accuracy_score,
-    mean_absolute_error
-)
+from sklearn.metrics import accuracy_score, mean_absolute_error
 
 
 EXCLUDE = {
@@ -20,105 +16,73 @@ EXCLUDE = {
     "close",
     "volume",
     "turnover",
-
     "target",
-
     "future_return",
     "future_close",
-
-    "future_open_return",
-    "future_high_return",
-    "future_low_return",
-    "future_close_return",
 }
 
 
-# =========================================================
-# FEATURE COLUMNS
-# =========================================================
-
 def feature_columns(df):
-
     return [
         c
         for c in df.columns
         if c not in EXCLUDE
-        and pd.api.types.is_numeric_dtype(
-            df[c]
-        )
+        and pd.api.types.is_numeric_dtype(df[c])
     ]
 
 
-# =========================================================
-# MODELS
-# =========================================================
-
 def _classifier(
-    seed=42,
     max_iter=250,
     learning_rate=0.04,
     max_leaf_nodes=15,
     min_samples_leaf=25,
-    l2=1.5
+    l2_regularization=1.5,
+    random_state=42
 ):
-
     return HistGradientBoostingClassifier(
         max_iter=max_iter,
         learning_rate=learning_rate,
         max_leaf_nodes=max_leaf_nodes,
         min_samples_leaf=min_samples_leaf,
-        l2_regularization=l2,
-        random_state=seed
+        l2_regularization=l2_regularization,
+        random_state=random_state
     )
 
 
-def _regressor(seed=42):
-
+def _regressor():
     return HistGradientBoostingRegressor(
-        max_iter=300,
-        learning_rate=0.035,
+        max_iter=250,
+        learning_rate=0.04,
         max_leaf_nodes=15,
         min_samples_leaf=25,
-        l2_regularization=2.0,
-        random_state=seed
+        l2_regularization=1.5,
+        random_state=42
     )
 
 
 def _make_classifiers():
-
     return [
-        _classifier(
-            seed=42,
-            max_iter=250,
-            learning_rate=0.04,
-            max_leaf_nodes=15,
-            min_samples_leaf=25,
-            l2=1.5
-        ),
+        _classifier(),
 
         _classifier(
-            seed=123,
             max_iter=300,
             learning_rate=0.03,
             max_leaf_nodes=12,
             min_samples_leaf=30,
-            l2=2.0
+            l2_regularization=2.0,
+            random_state=123
         ),
 
         _classifier(
-            seed=321,
             max_iter=200,
             learning_rate=0.05,
             max_leaf_nodes=10,
             min_samples_leaf=20,
-            l2=1.0
+            l2_regularization=1.0,
+            random_state=321
         )
     ]
 
-
-# =========================================================
-# TRAIN MODEL
-# =========================================================
 
 def train_model(df):
 
@@ -129,18 +93,24 @@ def train_model(df):
             "No usable model features were found."
         )
 
-    required = [
-        "target",
-        "future_open_return",
-        "future_high_return",
-        "future_low_return",
-        "future_close_return"
-    ]
-
     data = df.copy()
 
+    data["future_return"] = (
+        data["close"].shift(-1)
+        / data["close"]
+        - 1
+    )
+
+    data["future_close"] = (
+        data["close"].shift(-1)
+    )
+
     data = data.dropna(
-        subset=cols + required
+        subset=cols + [
+            "target",
+            "future_return",
+            "future_close"
+        ]
     ).copy()
 
     if len(data) < 500:
@@ -149,10 +119,6 @@ def train_model(df):
         )
 
     X = data[cols]
-
-    # =====================================================
-    # DIRECTION TARGET
-    # =====================================================
 
     y_direction = (
         data["target"]
@@ -164,29 +130,9 @@ def train_model(df):
         .astype(int)
     )
 
-    # =====================================================
-    # REGRESSION TARGETS
-    # =====================================================
+    y_return = data["future_return"]
 
-    y_open = data[
-        "future_open_return"
-    ]
-
-    y_high = data[
-        "future_high_return"
-    ]
-
-    y_low = data[
-        "future_low_return"
-    ]
-
-    y_close = data[
-        "future_close_return"
-    ]
-
-    split = int(
-        len(data) * 0.80
-    )
+    split = int(len(data) * 0.80)
 
     X_train = X.iloc[:split]
     X_test = X.iloc[split:]
@@ -194,26 +140,17 @@ def train_model(df):
     y_train = y_direction.iloc[:split]
     y_test = y_direction.iloc[split:]
 
-    open_train = y_open.iloc[:split]
-    open_test = y_open.iloc[split:]
+    r_train = y_return.iloc[:split]
+    r_test = y_return.iloc[split:]
 
-    high_train = y_high.iloc[:split]
-    high_test = y_high.iloc[split:]
-
-    low_train = y_low.iloc[:split]
-    low_test = y_low.iloc[split:]
-
-    close_train = y_close.iloc[:split]
-    close_test = y_close.iloc[split:]
-
-    # =====================================================
-    # CLASSIFICATION ENSEMBLE
-    # =====================================================
+    if y_train.nunique() < 2:
+        raise ValueError(
+            "Training data contains fewer than two target classes."
+        )
 
     classifiers = _make_classifiers()
 
     for model in classifiers:
-
         model.fit(
             X_train,
             y_train
@@ -223,11 +160,21 @@ def train_model(df):
 
     for model in classifiers:
 
-        test_probabilities.append(
-            model.predict_proba(
-                X_test
-            )
+        probabilities = model.predict_proba(
+            X_test
         )
+
+        # Make sure every model uses the same
+        # class ordering.
+        aligned = np.zeros(
+            (len(X_test), 3),
+            dtype=float
+        )
+
+        for j, cls in enumerate(model.classes_):
+            aligned[:, int(cls)] = probabilities[:, j]
+
+        test_probabilities.append(aligned)
 
     avg_probabilities = np.mean(
         test_probabilities,
@@ -239,54 +186,16 @@ def train_model(df):
         axis=1
     )
 
-    # =====================================================
-    # OHLC REGRESSION MODELS
-    # =====================================================
+    regressor = _regressor()
 
-    open_model = _regressor(101)
-    high_model = _regressor(202)
-    low_model = _regressor(303)
-    close_model = _regressor(404)
-
-    open_model.fit(
+    regressor.fit(
         X_train,
-        open_train
+        r_train
     )
 
-    high_model.fit(
-        X_train,
-        high_train
-    )
-
-    low_model.fit(
-        X_train,
-        low_train
-    )
-
-    close_model.fit(
-        X_train,
-        close_train
-    )
-
-    pred_open = open_model.predict(
+    predicted_return = regressor.predict(
         X_test
     )
-
-    pred_high = high_model.predict(
-        X_test
-    )
-
-    pred_low = low_model.predict(
-        X_test
-    )
-
-    pred_close = close_model.predict(
-        X_test
-    )
-
-    # =====================================================
-    # METRICS
-    # =====================================================
 
     metrics = {
         "holdout_accuracy": float(
@@ -304,33 +213,14 @@ def train_model(df):
             len(X_test)
         ),
 
-        "ensemble_models": 3,
-
-        "open_mae_pct": float(
-            mean_absolute_error(
-                open_test,
-                pred_open
-            ) * 100
-        ),
-
-        "high_mae_pct": float(
-            mean_absolute_error(
-                high_test,
-                pred_high
-            ) * 100
-        ),
-
-        "low_mae_pct": float(
-            mean_absolute_error(
-                low_test,
-                pred_low
-            ) * 100
+        "ensemble_models": len(
+            classifiers
         ),
 
         "close_mae_pct": float(
             mean_absolute_error(
-                close_test,
-                pred_close
+                r_test,
+                predicted_return
             ) * 100
         )
     }
@@ -338,20 +228,12 @@ def train_model(df):
     return (
         {
             "classifiers": classifiers,
-
-            "open_model": open_model,
-            "high_model": high_model,
-            "low_model": low_model,
-            "close_model": close_model
+            "regressor": regressor
         },
         cols,
         metrics
     )
 
-
-# =========================================================
-# PREDICT NEXT
-# =========================================================
 
 def predict_next(
     models,
@@ -367,49 +249,33 @@ def predict_next(
             "Latest candle contains missing features."
         )
 
-    # =====================================================
-    # DIRECTION
-    # =====================================================
-
     probabilities = []
 
     for model in models["classifiers"]:
 
-        probabilities.append(
-            model.predict_proba(
-                latest
-            )[0]
+        p = model.predict_proba(
+            latest
+        )[0]
+
+        aligned = np.zeros(
+            3,
+            dtype=float
         )
+
+        for j, cls in enumerate(model.classes_):
+            aligned[int(cls)] = p[j]
+
+        probabilities.append(aligned)
 
     avg_probability = np.mean(
         probabilities,
         axis=0
     )
 
-    # All classifiers use 0,1,2
-    mapping = {
-        int(k): float(v)
-        for k, v in zip(
-            models["classifiers"][0].classes_,
-            avg_probability
-        )
-    }
-
     probs = {
-        "bearish": mapping.get(
-            0,
-            0.0
-        ),
-
-        "neutral": mapping.get(
-            1,
-            0.0
-        ),
-
-        "bullish": mapping.get(
-            2,
-            0.0
-        )
+        "bearish": float(avg_probability[0]),
+        "neutral": float(avg_probability[1]),
+        "bullish": float(avg_probability[2])
     }
 
     best = max(
@@ -417,13 +283,17 @@ def predict_next(
         key=probs.get
     )
 
-    confidence = float(
-        probs[best]
-    )
+    confidence = probs[best]
 
     # =====================================================
     # MODEL AGREEMENT
     # =====================================================
+
+    class_id = {
+        "bearish": 0,
+        "neutral": 1,
+        "bullish": 2
+    }[best]
 
     individual_predictions = []
 
@@ -433,108 +303,62 @@ def predict_next(
             latest
         )[0]
 
+        classes = model.classes_
+
+        best_local = int(
+            classes[
+                np.argmax(p)
+            ]
+        )
+
         individual_predictions.append(
-            int(np.argmax(p))
+            best_local
         )
 
-    class_map = {
-        "bearish": 0,
-        "neutral": 1,
-        "bullish": 2
-    }
-
-    agreement_count = (
-        individual_predictions.count(
-            class_map[best]
-        )
+    agreement_count = individual_predictions.count(
+        class_id
     )
 
     if (
         confidence >= threshold
         and agreement_count >= 2
     ):
-
         signal = best.upper()
-
     else:
-
         signal = "NO EDGE"
 
     # =====================================================
-    # CURRENT PRICE
+    # REGRESSION
     # =====================================================
+
+    predicted_return = float(
+        models["regressor"].predict(
+            latest
+        )[0]
+    )
 
     current_close = float(
         df["close"].iloc[-1]
     )
 
-    # =====================================================
-    # NEXT OHLC PREDICTIONS
-    # =====================================================
-
-    predicted_open_return = float(
-        models["open_model"].predict(
-            latest
-        )[0]
-    )
-
-    predicted_high_return = float(
-        models["high_model"].predict(
-            latest
-        )[0]
-    )
-
-    predicted_low_return = float(
-        models["low_model"].predict(
-            latest
-        )[0]
-    )
-
-    predicted_close_return = float(
-        models["close_model"].predict(
-            latest
-        )[0]
-    )
-
-    expected_open = (
-        current_close
-        * (1 + predicted_open_return)
-    )
-
-    predicted_high = (
-        current_close
-        * (1 + predicted_high_return)
-    )
-
-    predicted_low = (
-        current_close
-        * (1 + predicted_low_return)
-    )
+    expected_open = current_close
 
     predicted_close = (
         current_close
-        * (1 + predicted_close_return)
-    )
-
-    # =====================================================
-    # SANITY ORDER
-    # =====================================================
-
-    predicted_high = max(
-        predicted_high,
-        expected_open,
-        predicted_close
-    )
-
-    predicted_low = min(
-        predicted_low,
-        expected_open,
-        predicted_close
+        * (1 + predicted_return)
     )
 
     expected_move_pct = (
-        predicted_close_return
-        * 100
+        predicted_return * 100
+    )
+
+    # =====================================================
+    # V7 EXTRA INFORMATION
+    # =====================================================
+
+    model_agreement = (
+        agreement_count
+        / len(models["classifiers"])
     )
 
     return (
@@ -543,15 +367,11 @@ def predict_next(
         expected_open,
         predicted_close,
         expected_move_pct,
-        predicted_high,
-        predicted_low,
-        agreement_count
+        confidence,
+        model_agreement,
+        individual_predictions
     )
 
-
-# =========================================================
-# WALK-FORWARD BACKTEST
-# =========================================================
 
 def walk_forward_backtest(
     df,
@@ -563,15 +383,20 @@ def walk_forward_backtest(
 
     data = df.copy()
 
+    data["future_return"] = (
+        data["close"].shift(-1)
+        / data["close"]
+        - 1
+    )
+
     data = data.dropna(
         subset=cols + [
-            "target"
+            "target",
+            "future_return"
         ]
     ).copy()
 
-    if len(data) <= (
-        min_train + step
-    ):
+    if len(data) <= min_train + step:
 
         return {
             "predictions": 0,
@@ -626,21 +451,31 @@ def walk_forward_backtest(
         if ytrain.nunique() < 2:
             continue
 
-        classifiers = _make_classifiers()
+        models = _make_classifiers()
 
         probabilities = []
 
-        for model in classifiers:
+        for model in models:
 
             model.fit(
                 train[cols],
                 ytrain
             )
 
+            p = model.predict_proba(
+                test[cols]
+            )
+
+            aligned = np.zeros(
+                (len(test), 3),
+                dtype=float
+            )
+
+            for j, cls in enumerate(model.classes_):
+                aligned[:, int(cls)] = p[:, j]
+
             probabilities.append(
-                model.predict_proba(
-                    test[cols]
-                )
+                aligned
             )
 
         avg_p = np.mean(
@@ -693,19 +528,16 @@ def walk_forward_backtest(
                 )
 
                 if pp == 2:
-
                     bullish.append(
                         pp == yy
                     )
 
                 elif pp == 0:
-
                     bearish.append(
                         pp == yy
                     )
 
                 else:
-
                     neutral.append(
                         pp == yy
                     )
@@ -725,8 +557,7 @@ def walk_forward_backtest(
         float(
             np.mean([
                 p == y
-                for p, y
-                in signal_preds
+                for p, y in signal_preds
             ])
         )
         if signal_preds
@@ -738,40 +569,28 @@ def walk_forward_backtest(
 
         "accuracy": accuracy,
 
-        "signals": len(
-            signal_preds
+        "signals": len(signal_preds),
+
+        "signal_accuracy": signal_accuracy,
+
+        "bullish_signals": len(bullish),
+
+        "bullish_accuracy": (
+            float(np.mean(bullish))
+            if bullish else 0.0
         ),
 
-        "signal_accuracy":
-            signal_accuracy,
+        "bearish_signals": len(bearish),
 
-        "bullish_signals":
-            len(bullish),
+        "bearish_accuracy": (
+            float(np.mean(bearish))
+            if bearish else 0.0
+        ),
 
-        "bullish_accuracy":
-            (
-                float(np.mean(bullish))
-                if bullish
-                else 0.0
-            ),
+        "neutral_signals": len(neutral),
 
-        "bearish_signals":
-            len(bearish),
-
-        "bearish_accuracy":
-            (
-                float(np.mean(bearish))
-                if bearish
-                else 0.0
-            ),
-
-        "neutral_signals":
-            len(neutral),
-
-        "neutral_accuracy":
-            (
-                float(np.mean(neutral))
-                if neutral
-                else 0.0
-            )
+        "neutral_accuracy": (
+            float(np.mean(neutral))
+            if neutral else 0.0
+        )
     }
