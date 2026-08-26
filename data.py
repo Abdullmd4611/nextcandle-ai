@@ -2,12 +2,20 @@ import time
 import requests
 import pandas as pd
 
-BASE = "https://api.mexc.com"
+BASE = "https://contract.mexc.com"
 
 
 def fetch_klines(symbol="ACE_USDT", interval="Min15", total=1000):
     end = int(time.time())
-    start = end - (total * 15 * 60)
+    seconds_per_candle = {
+        "Min15": 15 * 60,
+        "Hour4": 4 * 60 * 60,
+    }
+
+    if interval not in seconds_per_candle:
+        raise ValueError("Unsupported interval")
+
+    start = end - (total * seconds_per_candle[interval])
 
     params = {
         "interval": interval,
@@ -24,10 +32,11 @@ def fetch_klines(symbol="ACE_USDT", interval="Min15", total=1000):
 
     if not payload.get("success"):
         raise RuntimeError(
-            payload.get("message", "MEXC API error")
+            f"MEXC error {payload.get('code')}: "
+            f"{payload.get('message', 'Unknown error')}"
         )
 
-    data = payload["data"]
+    data = payload.get("data")
 
     if not data or not data.get("time"):
         raise RuntimeError("No MEXC candle data returned.")
