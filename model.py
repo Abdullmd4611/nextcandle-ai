@@ -20,9 +20,20 @@ EXCLUDE = {
     "close",
     "volume",
     "turnover",
+
+    # Future/target columns
     "target",
     "future_return",
     "future_close",
+    "future_open_return",
+    "future_high_return",
+    "future_low_return",
+    "future_close_return",
+
+    # Backtest-only columns
+    "next_open",
+    "next_close",
+    "actual_direction",
 }
 
 
@@ -80,7 +91,7 @@ def _regressor():
 
 
 # =========================================================
-# EMPTY BACKTEST RESULT
+# EMPTY BACKTEST
 # =========================================================
 
 def _empty_backtest():
@@ -88,6 +99,7 @@ def _empty_backtest():
     return {
         "predictions": 0,
         "accuracy": 0.0,
+
         "signals": 0,
         "signal_accuracy": 0.0,
 
@@ -99,6 +111,9 @@ def _empty_backtest():
 
         "neutral_signals": 0,
         "neutral_accuracy": 0.0,
+
+        "correct": 0,
+        "wrong": 0,
 
         "test_results": []
     }
@@ -113,7 +128,6 @@ def train_model(df):
     cols = feature_columns(df)
 
     if not cols:
-
         raise ValueError(
             "No usable model features were found."
         )
@@ -121,7 +135,7 @@ def train_model(df):
     data = df.copy()
 
     # -----------------------------------------------------
-    # Next-candle close return
+    # Future close return
     # -----------------------------------------------------
 
     data["future_return"] = (
@@ -160,11 +174,11 @@ def train_model(df):
     X = data[cols]
 
     # -----------------------------------------------------
-    # Direction target
+    # Existing V7 target
     #
-    # -1 = bearish = 0
-    #  0 = neutral = 1
-    #  1 = bullish = 2
+    # -1 = bearish
+    #  0 = neutral
+    #  1 = bullish
     # -----------------------------------------------------
 
     y_direction = (
@@ -191,7 +205,7 @@ def train_model(df):
     r_test = y_return.iloc[split:]
 
     # =====================================================
-    # THREE LIVE CLASSIFICATION MODELS
+    # THREE CLASSIFIERS
     # =====================================================
 
     classifiers = [
@@ -225,7 +239,7 @@ def train_model(df):
     ]
 
     # =====================================================
-    # TRAIN THREE MODELS
+    # TRAIN
     # =====================================================
 
     for model in classifiers:
@@ -236,7 +250,7 @@ def train_model(df):
         )
 
     # =====================================================
-    # ENSEMBLE TEST
+    # HOLDOUT TEST
     # =====================================================
 
     test_probabilities = []
@@ -260,7 +274,7 @@ def train_model(df):
     )
 
     # =====================================================
-    # REGRESSION MODEL
+    # REGRESSION
     # =====================================================
 
     regressor = _regressor()
@@ -316,7 +330,7 @@ def train_model(df):
 
 
 # =========================================================
-# PREDICT NEXT 15M CANDLE
+# LIVE NEXT CANDLE PREDICTION
 # =========================================================
 
 def predict_next(
@@ -354,7 +368,7 @@ def predict_next(
     )
 
     # =====================================================
-    # FIXED CLASS MAPPING
+    # PROBABILITY MAPPING
     # =====================================================
 
     mapping = {
@@ -427,7 +441,7 @@ def predict_next(
     )
 
     # =====================================================
-    # SIGNAL
+    # LIVE SIGNAL
     # =====================================================
 
     if (
@@ -466,10 +480,6 @@ def predict_next(
         predicted_return * 100
     )
 
-    # =====================================================
-    # APP EXPECTS EXACTLY FIVE VALUES
-    # =====================================================
-
     return (
         probs,
         signal,
@@ -480,7 +490,7 @@ def predict_next(
 
 
 # =========================================================
-# 80-TEST NEXT-CANDLE REALITY BACKTEST
+# 80-CANDLE BLIND NEXT-CANDLE TEST
 # =========================================================
 
 def walk_forward_backtest(
@@ -496,12 +506,14 @@ def walk_forward_backtest(
     # =====================================================
     # ACTUAL NEXT CANDLE
     #
-    # This is the REAL thing we want to measure:
+    # IMPORTANT:
     #
-    # next OPEN -> next CLOSE
+    # Prediction is made using candle i.
     #
-    # close > open = BULLISH
-    # close < open = BEARISH
+    # Actual result is candle i+1.
+    #
+    # next close > next open = BULLISH
+    # next close < next open = BEARISH
     # =====================================================
 
     data["next_open"] = (
@@ -512,23 +524,17 @@ def walk_forward_backtest(
         data["close"].shift(-1)
     )
 
-    data["actual_direction"] = np.select(
-        [
-            data["next_close"]
-            > data["next_open"],
+    data["actual_direction"] = np.where(
+        data["next_close"]
+        > data["next_open"],
 
-            data["next_close"]
-            < data["next_open"]
-        ],
-        [
-            "BULLISH",
-            "BEARISH"
-        ],
-        default="NEUTRAL"
+        "BULLISH",
+
+        "BEARISH"
     )
 
     # =====================================================
-    # CLEAN DATA
+    # CLEAN
     # =====================================================
 
     data = (
@@ -541,23 +547,18 @@ def walk_forward_backtest(
             subset=cols + [
                 "target",
                 "next_open",
-                "next_close",
-                "actual_direction"
+                "next_close"
             ]
         )
         .reset_index(drop=True)
     )
-
-    # =====================================================
-    # NOT ENOUGH DATA
-    # =====================================================
 
     if len(data) <= min_train + n_tests:
 
         return _empty_backtest()
 
     # =====================================================
-    # LAST 80 HISTORICAL PREDICTION POINTS
+    # LAST 80 TEST POINTS
     # =====================================================
 
     start = len(data) - n_tests
@@ -565,7 +566,7 @@ def walk_forward_backtest(
     results = []
 
     # =====================================================
-    # TRUE WALK-FORWARD TEST
+    # TRUE WALK-FORWARD
     # =====================================================
 
     for i in range(
@@ -574,8 +575,7 @@ def walk_forward_backtest(
     ):
 
         # -------------------------------------------------
-        # ONLY USE INFORMATION AVAILABLE BEFORE
-        # THE CANDLE BEING PREDICTED
+        # ONLY DATA BEFORE TEST POINT
         # -------------------------------------------------
 
         train = data.iloc[:i]
@@ -603,7 +603,7 @@ def walk_forward_backtest(
             continue
 
         # =================================================
-        # THREE MODELS — SAME AS LIVE V7
+        # THREE MODELS
         # =================================================
 
         classifiers = [
@@ -648,7 +648,7 @@ def walk_forward_backtest(
             )
 
         # =================================================
-        # CURRENT HISTORICAL CANDLE
+        # CURRENT CANDLE
         # =================================================
 
         current = data.iloc[[i]]
@@ -673,7 +673,7 @@ def walk_forward_backtest(
         )
 
         # =================================================
-        # PROBABILITY MAPPING
+        # MAP PROBABILITIES
         # =================================================
 
         mapping = {
@@ -703,7 +703,7 @@ def walk_forward_backtest(
         }
 
         # =================================================
-        # BEST PREDICTION
+        # MODEL PREDICTION
         # =================================================
 
         best = max(
@@ -718,7 +718,7 @@ def walk_forward_backtest(
         prediction = best.upper()
 
         # =================================================
-        # MODEL AGREEMENT
+        # AGREEMENT
         # =================================================
 
         individual_predictions = []
@@ -773,12 +773,16 @@ def walk_forward_backtest(
         )
 
         # =================================================
-        # CORRECT?
+        # CORRECT PREDICTION
         # =================================================
 
         correct = (
             prediction == actual
         )
+
+        # =================================================
+        # CORRECT TRADE SIGNAL
+        # =================================================
 
         signal_correct = (
             signal != "NO EDGE"
@@ -786,7 +790,7 @@ def walk_forward_backtest(
         )
 
         # =================================================
-        # SAVE TEST
+        # SAVE RESULT
         # =================================================
 
         results.append({
@@ -843,23 +847,32 @@ def walk_forward_backtest(
     )
 
     # =====================================================
+    # CORRECT / WRONG
+    # =====================================================
+
+    correct_count = int(
+        result_df["correct"].sum()
+    )
+
+    wrong_count = int(
+        len(result_df)
+        - correct_count
+    )
+
+    # =====================================================
     # OVERALL ACCURACY
     # =====================================================
 
     accuracy = float(
-        result_df[
-            "correct"
-        ].mean()
+        result_df["correct"].mean()
     )
 
     # =====================================================
-    # HIGH-CONFIDENCE SIGNALS
+    # SIGNAL RESULTS
     # =====================================================
 
     signal_df = result_df[
-        result_df[
-            "signal"
-        ] != "NO EDGE"
+        result_df["signal"] != "NO EDGE"
     ]
 
     if len(signal_df) > 0:
@@ -875,34 +888,64 @@ def walk_forward_backtest(
         signal_accuracy = 0.0
 
     # =====================================================
-    # BULLISH PREDICTIONS
+    # BULLISH
     # =====================================================
 
     bullish_df = result_df[
-        result_df[
-            "prediction"
-        ] == "BULLISH"
+        result_df["prediction"]
+        == "BULLISH"
     ]
 
+    bullish_accuracy = (
+
+        float(
+            bullish_df["correct"].mean()
+        )
+
+        if len(bullish_df) > 0
+
+        else 0.0
+    )
+
     # =====================================================
-    # BEARISH PREDICTIONS
+    # BEARISH
     # =====================================================
 
     bearish_df = result_df[
-        result_df[
-            "prediction"
-        ] == "BEARISH"
+        result_df["prediction"]
+        == "BEARISH"
     ]
 
+    bearish_accuracy = (
+
+        float(
+            bearish_df["correct"].mean()
+        )
+
+        if len(bearish_df) > 0
+
+        else 0.0
+    )
+
     # =====================================================
-    # NEUTRAL PREDICTIONS
+    # NEUTRAL
     # =====================================================
 
     neutral_df = result_df[
-        result_df[
-            "prediction"
-        ] == "NEUTRAL"
+        result_df["prediction"]
+        == "NEUTRAL"
     ]
+
+    neutral_accuracy = (
+
+        float(
+            neutral_df["correct"].mean()
+        )
+
+        if len(neutral_df) > 0
+
+        else 0.0
+    )
 
     # =====================================================
     # RETURN
@@ -915,6 +958,10 @@ def walk_forward_backtest(
         ),
 
         "accuracy": accuracy,
+
+        "correct": correct_count,
+
+        "wrong": wrong_count,
 
         "signals": len(
             signal_df
@@ -929,13 +976,7 @@ def walk_forward_backtest(
         ),
 
         "bullish_accuracy": (
-            float(
-                bullish_df[
-                    "correct"
-                ].mean()
-            )
-            if len(bullish_df) > 0
-            else 0.0
+            bullish_accuracy
         ),
 
         "bearish_signals": len(
@@ -943,13 +984,7 @@ def walk_forward_backtest(
         ),
 
         "bearish_accuracy": (
-            float(
-                bearish_df[
-                    "correct"
-                ].mean()
-            )
-            if len(bearish_df) > 0
-            else 0.0
+            bearish_accuracy
         ),
 
         "neutral_signals": len(
@@ -957,13 +992,7 @@ def walk_forward_backtest(
         ),
 
         "neutral_accuracy": (
-            float(
-                neutral_df[
-                    "correct"
-                ].mean()
-            )
-            if len(neutral_df) > 0
-            else 0.0
+            neutral_accuracy
         ),
 
         "test_results": results
