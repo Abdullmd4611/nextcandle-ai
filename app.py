@@ -4,21 +4,25 @@ import numpy as np
 
 from data import fetch_klines
 from features import make_features
-from model import train_model, predict_next, walk_forward_backtest
+from model import (
+    train_model,
+    predict_next,
+    walk_forward_backtest
+)
 
 
 st.set_page_config(
-    page_title="NextCandle AI V3",
+    page_title="NextCandle AI V4",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 NextCandle AI — V3")
+st.title("📈 NextCandle AI — V4")
 
 st.caption(
     "ACEUSDT 15-minute next-candle prediction with "
-    "4-hour higher-timeframe confirmation. "
-    "Research/paper-trading only."
+    "4-hour higher-timeframe confirmation and "
+    "confidence calibration. Research/paper-trading only."
 )
 
 
@@ -71,7 +75,7 @@ if run or "result" not in st.session_state:
 
     with st.spinner(
         "Downloading ACEUSDT 15M + 4H data and "
-        "training V3..."
+        "training V4..."
     ):
 
         try:
@@ -93,7 +97,8 @@ if run or "result" not in st.session_state:
                 raw_4h
             )
 
-            if len(df) < 300:
+            if len(df) < 500:
+
                 raise ValueError(
                     "Not enough clean historical data."
                 )
@@ -126,7 +131,7 @@ if run or "result" not in st.session_state:
         except Exception as e:
 
             st.error(
-                f"❌ Could not build V3 model: {e}"
+                f"❌ Could not build V4 model: {e}"
             )
 
             st.stop()
@@ -172,13 +177,13 @@ confirmation_score = 0
 confirmation_reasons = []
 
 
-# 4H confirmation
+# 4H
 if htf_bias == "BULLISH":
 
     confirmation_score += 2
 
     confirmation_reasons.append(
-        "🟢 4H trend supports BUY direction"
+        "🟢 4H trend supports bullish direction"
     )
 
 elif htf_bias == "BEARISH":
@@ -186,7 +191,7 @@ elif htf_bias == "BEARISH":
     confirmation_score -= 2
 
     confirmation_reasons.append(
-        "🔴 4H trend supports SELL direction"
+        "🔴 4H trend supports bearish direction"
     )
 
 else:
@@ -306,7 +311,7 @@ else:
 
 
 # =========================================================
-# FINAL CONFIRMATION
+# FINAL SIGNAL
 # =========================================================
 
 if ml_signal == "BULLISH":
@@ -386,7 +391,7 @@ if final_signal == "BULLISH":
     confidence = probs["bullish"]
 
     st.success(
-        f"🟢 NEXT 15M: BULLISH"
+        "🟢 NEXT 15M: BULLISH"
     )
 
 elif final_signal == "BEARISH":
@@ -394,7 +399,7 @@ elif final_signal == "BEARISH":
     confidence = probs["bearish"]
 
     st.error(
-        f"🔴 NEXT 15M: BEARISH"
+        "🔴 NEXT 15M: BEARISH"
     )
 
 else:
@@ -433,7 +438,7 @@ c4.metric(
 
 
 # =========================================================
-# ML PROBABILITIES
+# PROBABILITIES
 # =========================================================
 
 st.subheader(
@@ -465,7 +470,153 @@ with p3:
 
 
 # =========================================================
-# CONFIRMATION
+# V4 CONFIDENCE CALIBRATION
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "🎯 V4 Confidence Calibration"
+)
+
+st.write(
+    "This compares the model's confidence with how often "
+    "similar predictions were actually correct historically."
+)
+
+calibration_table = metrics.get(
+    "calibration_table",
+    []
+)
+
+if calibration_table:
+
+    calibration_df = pd.DataFrame(
+        calibration_table
+    )
+
+    if not calibration_df.empty:
+
+        calibration_df[
+            "average_confidence"
+        ] = (
+            calibration_df[
+                "average_confidence"
+            ] * 100
+        ).round(2)
+
+        calibration_df[
+            "actual_accuracy"
+        ] = (
+            calibration_df[
+                "actual_accuracy"
+            ] * 100
+        ).round(2)
+
+        calibration_df = calibration_df.rename(
+            columns={
+                "bucket":
+                    "Confidence range",
+
+                "samples":
+                    "Samples",
+
+                "average_confidence":
+                    "Avg confidence %",
+
+                "actual_accuracy":
+                    "Actual accuracy %"
+            }
+        )
+
+        st.dataframe(
+            calibration_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+else:
+
+    st.info(
+        "Not enough calibration data yet."
+    )
+
+
+calibration_error = metrics.get(
+    "average_calibration_error",
+    0.0
+)
+
+st.write(
+    f"Average calibration error: "
+    f"**{calibration_error * 100:.2f}%**"
+)
+
+
+# Find current confidence bucket
+current_bucket = None
+
+if confidence < 0.55:
+    current_bucket = "50-55%"
+
+elif confidence < 0.60:
+    current_bucket = "55-60%"
+
+elif confidence < 0.65:
+    current_bucket = "60-65%"
+
+elif confidence < 0.70:
+    current_bucket = "65-70%"
+
+elif confidence < 0.75:
+    current_bucket = "70-75%"
+
+elif confidence < 0.80:
+    current_bucket = "75-80%"
+
+else:
+    current_bucket = "80%+"
+
+
+current_bucket_accuracy = None
+current_bucket_samples = 0
+
+for row in calibration_table:
+
+    if row["bucket"] == current_bucket:
+
+        current_bucket_accuracy = (
+            row["actual_accuracy"]
+        )
+
+        current_bucket_samples = (
+            row["samples"]
+        )
+
+        break
+
+
+if current_bucket_accuracy is not None:
+
+    st.info(
+        f"Current ML confidence falls in the "
+        f"**{current_bucket}** historical bucket. "
+        f"That bucket had **"
+        f"{current_bucket_accuracy * 100:.1f}%** "
+        f"actual accuracy across "
+        f"**{current_bucket_samples}** predictions."
+    )
+
+else:
+
+    st.warning(
+        f"No reliable historical sample for the "
+        f"current {current_bucket} confidence bucket."
+    )
+
+
+# =========================================================
+# MARKET CONFIRMATION
 # =========================================================
 
 st.divider()
@@ -486,17 +637,15 @@ for reason in confirmation_reasons:
 if ml_direction == 1 and confirmation_score < 0:
 
     st.warning(
-        "⚠️ The ML model is bullish, but the current "
-        "market factors are mostly bearish. "
-        "This is classified as model/market disagreement."
+        "⚠️ ML is bullish, but current market factors "
+        "are mostly bearish. Model/market disagreement."
     )
 
 elif ml_direction == -1 and confirmation_score > 0:
 
     st.warning(
-        "⚠️ The ML model is bearish, but the current "
-        "market factors are mostly bullish. "
-        "This is classified as model/market disagreement."
+        "⚠️ ML is bearish, but current market factors "
+        "are mostly bullish. Model/market disagreement."
     )
 
 elif final_signal in ["BULLISH", "BEARISH"]:
@@ -562,9 +711,14 @@ with left:
         f"**{metrics['train_samples']:,}**"
     )
 
+    st.write(
+        f"Calibration samples: "
+        f"**{metrics['calibration_samples']:,}**"
+    )
+
     st.caption(
-        "Chronological validation. "
-        "No random shuffling."
+        "70% training → 10% calibration → "
+        "20% final holdout. No random shuffling."
     )
 
 
@@ -594,9 +748,14 @@ with right:
         f"**{bt['signal_accuracy'] * 100:.2f}%**"
     )
 
+    st.write(
+        f"Calibration error: "
+        f"**{bt.get('calibration_error', 0) * 100:.2f}%**"
+    )
+
 
 # =========================================================
-# DIRECTION-SPECIFIC BACKTEST
+# DIRECTION BACKTEST
 # =========================================================
 
 st.subheader(
@@ -671,12 +830,14 @@ available_columns = [
 ]
 
 st.dataframe(
-    df[available_columns].tail(20),
+    df[
+        available_columns
+    ].tail(20),
     use_container_width=True
 )
 
 
 st.caption(
-    "V3 does not place orders. Probabilities are model estimates, "
-    "not guarantees of future price movement."
+    "V4 does not place orders. Probabilities are model "
+    "estimates, not guarantees of future price movement."
 )
