@@ -2,11 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-from datetime import datetime, timezone
-
 from data import fetch_klines
 from features import make_features
-
 from model import (
     train_model,
     predict_next,
@@ -24,14 +21,11 @@ st.set_page_config(
     layout="wide"
 )
 
-
-st.title(
-    "📈 NextCandle AI — V7"
-)
+st.title("📈 NextCandle AI — V7")
 
 st.caption(
     "AI prediction of the NEXT 15-minute candle. "
-    "Direction + predicted OHLC + expected move. "
+    "Direction + estimated next-candle price. "
     "Research/paper-trading only."
 )
 
@@ -42,9 +36,7 @@ st.caption(
 
 with st.sidebar:
 
-    st.header(
-        "⚙️ Settings"
-    )
+    st.header("⚙️ Settings")
 
     symbol = st.text_input(
         "Trading pair",
@@ -83,23 +75,13 @@ with st.sidebar:
 # BUILD V7
 # =========================================================
 
-if (
-    run
-    or "result" not in st.session_state
-    or st.session_state.get(
-        "last_symbol"
-    ) != symbol
-):
+if run or "result" not in st.session_state:
 
     with st.spinner(
-        "Downloading completed candles and training V7..."
+        "Downloading candles and training V7..."
     ):
 
         try:
-
-            # -------------------------------------------------
-            # 15M
-            # -------------------------------------------------
 
             raw_15m = fetch_klines(
                 symbol,
@@ -107,19 +89,11 @@ if (
                 history
             )
 
-            # -------------------------------------------------
-            # 4H
-            # -------------------------------------------------
-
             raw_4h = fetch_klines(
                 symbol,
                 "Hour4",
                 500
             )
-
-            # -------------------------------------------------
-            # FEATURES
-            # -------------------------------------------------
 
             df = make_features(
                 raw_15m,
@@ -127,36 +101,22 @@ if (
             )
 
             if len(df) < 500:
-
                 raise ValueError(
                     "Not enough clean historical candles."
                 )
 
-            # -------------------------------------------------
-            # TRAIN
-            # -------------------------------------------------
-
-            (
-                models,
-                feature_cols,
-                metrics
-            ) = train_model(
+            models, feature_cols, metrics = train_model(
                 df
             )
 
-            # -------------------------------------------------
-            # PREDICTION
-            # -------------------------------------------------
-
+            # IMPORTANT:
+            # Current model.py returns FIVE values.
             (
                 probs,
                 ml_signal,
                 expected_open,
                 predicted_close,
-                expected_move_pct,
-                predicted_high,
-                predicted_low,
-                agreement_count
+                expected_move_pct
             ) = predict_next(
                 models,
                 df,
@@ -164,19 +124,11 @@ if (
                 threshold
             )
 
-            # -------------------------------------------------
-            # BACKTEST
-            # -------------------------------------------------
-
             bt = walk_forward_backtest(
                 df,
                 feature_cols,
                 signal_threshold=threshold
             )
-
-            # -------------------------------------------------
-            # SAVE
-            # -------------------------------------------------
 
             st.session_state.result = (
                 df,
@@ -185,14 +137,9 @@ if (
                 expected_open,
                 predicted_close,
                 expected_move_pct,
-                predicted_high,
-                predicted_low,
-                agreement_count,
                 metrics,
                 bt
             )
-
-            st.session_state.last_symbol = symbol
 
         except Exception as e:
 
@@ -214,9 +161,6 @@ if (
     expected_open,
     predicted_close,
     expected_move_pct,
-    predicted_high,
-    predicted_low,
-    agreement_count,
     metrics,
     bt
 ) = st.session_state.result
@@ -225,21 +169,17 @@ if (
 latest = df.iloc[-1]
 
 
-current_close = float(
-    latest["close"]
-)
-
-
 # =========================================================
 # 4H CONTEXT
 # =========================================================
 
-htf_score = float(
-    latest.get(
-        "htf_bias_score",
-        0
-    )
+htf_score = latest.get(
+    "htf_bias_score",
+    0
 )
+
+if pd.isna(htf_score):
+    htf_score = 0
 
 if htf_score >= 2:
 
@@ -258,46 +198,11 @@ else:
 
 
 # =========================================================
-# NEXT CANDLE TIME
+# CURRENT PRICE
 # =========================================================
 
-last_timestamp = pd.to_datetime(
-    latest["timestamp"],
-    utc=True
-)
-
-next_candle_time = (
-    last_timestamp
-    + pd.Timedelta(minutes=15)
-)
-
-now_utc = pd.Timestamp.now(
-    tz="UTC"
-)
-
-seconds_remaining = max(
-    0,
-    int(
-        (
-            next_candle_time
-            - now_utc
-        ).total_seconds()
-    )
-)
-
-minutes_remaining = (
-    seconds_remaining // 60
-)
-
-seconds_part = (
-    seconds_remaining % 60
-)
-
-next_time_text = (
-    next_candle_time
-    .strftime(
-        "%H:%M UTC"
-    )
+current_close = float(
+    latest["close"]
 )
 
 
@@ -339,48 +244,10 @@ elif ml_signal == "BEARISH":
 else:
 
     st.warning(
-        f"⚪ NEXT 15M: WAIT / NO EDGE — "
+        f"⚪ NEXT 15M: WAIT — "
         f"highest confidence "
         f"{confidence * 100:.1f}%"
     )
-
-
-# =========================================================
-# CANDLE TIMER
-# =========================================================
-
-t1, t2, t3 = st.columns(3)
-
-
-with t1:
-
-    st.metric(
-        "🕐 Next Candle Opens",
-        next_time_text
-    )
-
-
-with t2:
-
-    st.metric(
-        "⏳ Time Until Open",
-        f"{minutes_remaining}m "
-        f"{seconds_part:02d}s"
-    )
-
-
-with t3:
-
-    st.metric(
-        "🤖 Model Agreement",
-        f"{agreement_count}/3"
-    )
-
-
-st.caption(
-    "The countdown is based on the timestamp of the "
-    "latest completed 15-minute candle."
-)
 
 
 # =========================================================
@@ -389,33 +256,25 @@ st.caption(
 
 c1, c2, c3, c4 = st.columns(4)
 
-
 with c1:
-
     st.metric(
         "ML Confidence",
         f"{confidence * 100:.1f}%"
     )
 
-
 with c2:
-
     st.metric(
         "🧭 4H Context",
         f"{htf_icon} {htf_bias}"
     )
 
-
 with c3:
-
     st.metric(
         "🤖 Ensemble",
         f"{metrics.get('ensemble_models', 3)} models"
     )
 
-
 with c4:
-
     st.metric(
         "🎯 Threshold",
         f"{threshold * 100:.0f}%"
@@ -423,53 +282,49 @@ with c4:
 
 
 # =========================================================
-# PREDICTED OHLC
+# NEXT CANDLE PRICE
 # =========================================================
 
 st.divider()
 
 st.subheader(
-    "💰 V7 PREDICTED NEXT-CANDLE OHLC"
+    "💰 NEXT 15M PRICE ESTIMATE"
 )
 
 st.caption(
-    "These prices are produced by separate regression "
-    "models trained on historical completed candles."
+    "The regression model estimates the next candle's "
+    "opening reference, closing price and percentage move."
 )
 
 
-q1, q2, q3, q4 = st.columns(4)
+q1, q2, q3 = st.columns(3)
 
 
 with q1:
 
     st.metric(
-        "Predicted Open",
+        "Current / Expected Open",
         f"{expected_open:.8f}"
     )
 
 
 with q2:
 
-    st.metric(
-        "Predicted High",
-        f"{predicted_high:.8f}"
-    )
+    if expected_move_pct > 0:
 
+        delta_text = (
+            f"+{expected_move_pct:.3f}%"
+        )
 
-with q3:
+    elif expected_move_pct < 0:
 
-    st.metric(
-        "Predicted Low",
-        f"{predicted_low:.8f}"
-    )
+        delta_text = (
+            f"{expected_move_pct:.3f}%"
+        )
 
+    else:
 
-with q4:
-
-    delta_text = (
-        f"{expected_move_pct:+.3f}%"
-    )
+        delta_text = "0.000%"
 
     st.metric(
         "Predicted Close",
@@ -478,21 +333,17 @@ with q4:
     )
 
 
+with q3:
+
+    st.metric(
+        "Current Price",
+        f"{current_close:.8f}"
+    )
+
+
 # =========================================================
-# CURRENT PRICE
+# EXPECTED MOVE
 # =========================================================
-
-st.write(
-    f"Current completed-candle close: "
-    f"**{current_close:.8f}**"
-)
-
-
-price_difference = (
-    predicted_close
-    - current_close
-)
-
 
 if expected_move_pct > 0:
 
@@ -511,21 +362,24 @@ else:
 
 
 st.info(
-    f"{move_icon} V7 expects the NEXT 15M "
-    f"close to move approximately "
-    f"**{expected_move_pct:+.3f}% {move_direction}** "
-    f"from the current completed-candle close."
+    f"{move_icon} Model expects the NEXT 15M candle "
+    f"to move approximately "
+    f"**{expected_move_pct:.3f}% {move_direction}**."
 )
 
 
+price_difference = (
+    predicted_close - current_close
+)
+
 st.write(
-    f"Estimated close difference: "
+    f"Estimated price difference: "
     f"**{price_difference:+.8f}**"
 )
 
 
 # =========================================================
-# PROBABILITIES
+# PROBABILITY BREAKDOWN
 # =========================================================
 
 st.divider()
@@ -563,7 +417,7 @@ with p3:
 
 
 # =========================================================
-# ENGINE
+# V7 ENGINE
 # =========================================================
 
 st.divider()
@@ -573,48 +427,50 @@ st.subheader(
 )
 
 st.write(
-    "V7 uses three classification models to estimate "
-    "the probability that the NEXT 15-minute candle "
-    "will be bullish, neutral or bearish."
+    "V7 predicts the direction of the NEXT 15-minute candle."
 )
 
 st.write(
-    "Four separate regression models estimate the "
-    "NEXT candle's Open, High, Low and Close."
+    "The ensemble uses three machine-learning "
+    "classification models."
 )
 
 st.write(
-    "Only completed 15-minute candles are used for "
-    "training and the latest prediction."
+    "A separate regression model estimates the "
+    "next-candle percentage return."
 )
 
 st.write(
     "The 4H timeframe provides higher-timeframe context."
 )
 
+
+# =========================================================
+# PREDICTION STATUS
+# =========================================================
+
 if ml_signal == "BULLISH":
 
     st.success(
-        f"🎯 V7 currently favors a BULLISH next candle "
-        f"with {confidence * 100:.1f}% model confidence "
-        f"and {agreement_count}/3 model agreement."
+        f"🎯 V7 prediction: NEXT 15M candle is "
+        f"most likely **BULLISH** with "
+        f"{confidence * 100:.1f}% model confidence."
     )
 
 elif ml_signal == "BEARISH":
 
     st.error(
-        f"🎯 V7 currently favors a BEARISH next candle "
-        f"with {confidence * 100:.1f}% model confidence "
-        f"and {agreement_count}/3 model agreement."
+        f"🎯 V7 prediction: NEXT 15M candle is "
+        f"most likely **BEARISH** with "
+        f"{confidence * 100:.1f}% model confidence."
     )
 
 else:
 
     st.warning(
-        f"🎯 V7 says NO EDGE. "
-        f"Highest probability: "
-        f"{confidence * 100:.1f}%. "
-        f"Model agreement: {agreement_count}/3."
+        f"🎯 V7 prediction: **WAIT**. "
+        f"The highest model probability is only "
+        f"{confidence * 100:.1f}%."
     )
 
 
@@ -625,7 +481,7 @@ else:
 st.divider()
 
 st.subheader(
-    "🧭 4H Context"
+    "🧭 4H Context Used By The Model"
 )
 
 
@@ -643,8 +499,11 @@ if pd.notna(htf_gap):
 
 
 st.write(
-    f"4H bias score: "
-    f"**{htf_score:.0f}**"
+    f"4H bias score: **{htf_score:.0f}**"
+)
+
+st.caption(
+    "4H data is used as context for the NEXT 15M prediction."
 )
 
 
@@ -665,37 +524,26 @@ with left:
 
     st.write(
         f"Holdout accuracy: "
-        f"**{metrics['holdout_accuracy'] * 100:.2f}%**"
+        f"**{metrics.get('holdout_accuracy', 0) * 100:.2f}%**"
     )
 
     st.write(
         f"Training samples: "
-        f"**{metrics['train_samples']:,}**"
+        f"**{metrics.get('train_samples', 0):,}**"
     )
 
     st.write(
         f"Holdout samples: "
-        f"**{metrics['holdout_samples']:,}**"
+        f"**{metrics.get('holdout_samples', 0):,}**"
     )
 
     st.write(
-        f"Open MAE: "
-        f"**{metrics.get('open_mae_pct', 0):.4f}%**"
-    )
-
-    st.write(
-        f"High MAE: "
-        f"**{metrics.get('high_mae_pct', 0):.4f}%**"
-    )
-
-    st.write(
-        f"Low MAE: "
-        f"**{metrics.get('low_mae_pct', 0):.4f}%**"
-    )
-
-    st.write(
-        f"Close MAE: "
+        f"Close-return MAE: "
         f"**{metrics.get('close_mae_pct', 0):.4f}%**"
+    )
+
+    st.caption(
+        "Training data comes before validation data."
     )
 
 
@@ -707,22 +555,22 @@ with right:
 
     st.write(
         f"Predictions: "
-        f"**{bt['predictions']:,}**"
+        f"**{bt.get('predictions', 0):,}**"
     )
 
     st.write(
         f"Overall accuracy: "
-        f"**{bt['accuracy'] * 100:.2f}%**"
+        f"**{bt.get('accuracy', 0) * 100:.2f}%**"
     )
 
     st.write(
         f"High-confidence signals: "
-        f"**{bt['signals']:,}**"
+        f"**{bt.get('signals', 0):,}**"
     )
 
     st.write(
         f"Signal accuracy: "
-        f"**{bt['signal_accuracy'] * 100:.2f}%**"
+        f"**{bt.get('signal_accuracy', 0) * 100:.2f}%**"
     )
 
 
@@ -742,12 +590,12 @@ with b1:
 
     st.metric(
         "🟢 Bullish",
-        bt["bullish_signals"]
+        bt.get("bullish_signals", 0)
     )
 
     st.write(
         f"Accuracy: "
-        f"**{bt['bullish_accuracy'] * 100:.2f}%**"
+        f"**{bt.get('bullish_accuracy', 0) * 100:.2f}%**"
     )
 
 
@@ -755,12 +603,12 @@ with b2:
 
     st.metric(
         "🔴 Bearish",
-        bt["bearish_signals"]
+        bt.get("bearish_signals", 0)
     )
 
     st.write(
         f"Accuracy: "
-        f"**{bt['bearish_accuracy'] * 100:.2f}%**"
+        f"**{bt.get('bearish_accuracy', 0) * 100:.2f}%**"
     )
 
 
@@ -768,12 +616,12 @@ with b3:
 
     st.metric(
         "⚪ Neutral",
-        bt["neutral_signals"]
+        bt.get("neutral_signals", 0)
     )
 
     st.write(
         f"Accuracy: "
-        f"**{bt['neutral_accuracy'] * 100:.2f}%**"
+        f"**{bt.get('neutral_accuracy', 0) * 100:.2f}%**"
     )
 
 
@@ -816,7 +664,7 @@ st.dataframe(
 # =========================================================
 
 st.caption(
-    "V7 is a statistical research/paper-trading system. "
-    "Predicted prices, probabilities and directions are "
-    "estimates, not guarantees of future market movement."
+    "V7 is a research/paper-trading model. "
+    "Predictions, probabilities and price estimates "
+    "are not guarantees of future market movement."
 )
