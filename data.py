@@ -2,94 +2,50 @@ import time
 import requests
 import pandas as pd
 
-BASE = "https://api.binance.com"
+BASE = "https://api.mexc.com"
 
-def fetch_klines(symbol="BTCUSDT", interval="5", total=5000):
-    rows = []
-    end = int(time.time() * 1000)
-    remaining = total
 
-    while remaining > 0:
-        limit = min(1000, remaining)
+def fetch_klines(symbol="ACE_USDT", interval="Min15", total=1000):
+    end = int(time.time())
+    start = end - (total * 15 * 60)
 
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "endTime": end,
-            "limit": limit,
-        }
+    params = {
+        "interval": interval,
+        "start": start,
+        "end": end,
+    }
 
-        r = requests.get(
-            f"{BASE}/api/v3/klines",
-            params=params,
-            timeout=20,
+    url = f"{BASE}/api/v1/contract/kline/{symbol}"
+
+    r = requests.get(url, params=params, timeout=20)
+    r.raise_for_status()
+
+    payload = r.json()
+
+    if not payload.get("success"):
+        raise RuntimeError(
+            payload.get("message", "MEXC API error")
         )
 
-        r.raise_for_status()
+    data = payload["data"]
 
-        batch = r.json()
+    if not data or not data.get("time"):
+        raise RuntimeError("No MEXC candle data returned.")
 
-        if not batch:
-            break
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(
+            data["time"], unit="s", utc=True
+        ),
+        "open": pd.to_numeric(data["open"]),
+        "high": pd.to_numeric(data["high"]),
+        "low": pd.to_numeric(data["low"]),
+        "close": pd.to_numeric(data["close"]),
+        "volume": pd.to_numeric(data["vol"]),
+        "turnover": pd.to_numeric(data["amount"]),
+    })
 
-        rows.extend(batch)
-
-        oldest = min(int(x[0]) for x in batch)
-        end = oldest - 1
-        remaining -= len(batch)
-
-        if len(batch) < limit:
-            break
-
-    if not rows:
-        raise RuntimeError("No candle data was returned.")
-
-    df = pd.DataFrame(
-        rows,
-        columns=[
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "close_time",
-            "quote_volume",
-            "trades",
-            "taker_buy_base",
-            "taker_buy_quote",
-            "ignore",
-        ],
-    )
-
-    for c in ["open", "high", "low", "close", "volume"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    df["turnover"] = pd.to_numeric(
-        df["quote_volume"], errors="coerce"
-    )
-
-    df["timestamp"] = pd.to_datetime(
-        df["timestamp"].astype("int64"),
-        unit="ms",
-        utc=True,
-    )
-
-    df = (
-        df[
-            [
-                "timestamp",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "turnover",
-            ]
-        ]
-        .sort_values("timestamp")
+    return (
+        df.sort_values("timestamp")
         .drop_duplicates("timestamp")
         .reset_index(drop=True)
     )
-
-    return df
