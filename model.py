@@ -90,12 +90,17 @@ def _empty_backtest():
         "accuracy": 0.0,
         "signals": 0,
         "signal_accuracy": 0.0,
+
         "bullish_signals": 0,
         "bullish_accuracy": 0.0,
+
         "bearish_signals": 0,
         "bearish_accuracy": 0.0,
+
         "neutral_signals": 0,
-        "neutral_accuracy": 0.0
+        "neutral_accuracy": 0.0,
+
+        "test_results": []
     }
 
 
@@ -115,7 +120,10 @@ def train_model(df):
 
     data = df.copy()
 
-    # Next-candle return
+    # -----------------------------------------------------
+    # Next-candle close return
+    # -----------------------------------------------------
+
     data["future_return"] = (
         data["close"].shift(-1)
         / data["close"]
@@ -459,8 +467,7 @@ def predict_next(
     )
 
     # =====================================================
-    # IMPORTANT:
-    # app.py expects EXACTLY FIVE VALUES.
+    # APP EXPECTS EXACTLY FIVE VALUES
     # =====================================================
 
     return (
@@ -473,24 +480,56 @@ def predict_next(
 
 
 # =========================================================
-# FAST WALK-FORWARD BACKTEST
+# 80-TEST NEXT-CANDLE REALITY BACKTEST
 # =========================================================
 
 def walk_forward_backtest(
     df,
     cols,
+    n_tests=80,
     min_train=1000,
-    step=500,
     signal_threshold=0.65
 ):
 
     data = df.copy()
 
-    data["future_return"] = (
-        data["close"].shift(-1)
-        / data["close"]
-        - 1
+    # =====================================================
+    # ACTUAL NEXT CANDLE
+    #
+    # This is the REAL thing we want to measure:
+    #
+    # next OPEN -> next CLOSE
+    #
+    # close > open = BULLISH
+    # close < open = BEARISH
+    # =====================================================
+
+    data["next_open"] = (
+        data["open"].shift(-1)
     )
+
+    data["next_close"] = (
+        data["close"].shift(-1)
+    )
+
+    data["actual_direction"] = np.select(
+        [
+            data["next_close"]
+            > data["next_open"],
+
+            data["next_close"]
+            < data["next_open"]
+        ],
+        [
+            "BULLISH",
+            "BEARISH"
+        ],
+        default="NEUTRAL"
+    )
+
+    # =====================================================
+    # CLEAN DATA
+    # =====================================================
 
     data = (
         data
@@ -501,56 +540,55 @@ def walk_forward_backtest(
         .dropna(
             subset=cols + [
                 "target",
-                "future_return"
+                "next_open",
+                "next_close",
+                "actual_direction"
             ]
         )
-        .copy()
+        .reset_index(drop=True)
     )
 
     # =====================================================
     # NOT ENOUGH DATA
     # =====================================================
 
-    if len(data) <= min_train + 50:
+    if len(data) <= min_train + n_tests:
 
         return _empty_backtest()
 
-    preds = []
-    actuals = []
+    # =====================================================
+    # LAST 80 HISTORICAL PREDICTION POINTS
+    # =====================================================
 
-    signal_preds = []
+    start = len(data) - n_tests
 
-    bullish = []
-    bearish = []
-    neutral = []
+    results = []
 
     # =====================================================
-    # FAST VALIDATION
-    #
-    # step=500 means only a small number of
-    # validation training cycles.
+    # TRUE WALK-FORWARD TEST
     # =====================================================
 
     for i in range(
-        min_train,
-        len(data) - 1,
-        step
+        start,
+        len(data)
     ):
+
+        # -------------------------------------------------
+        # ONLY USE INFORMATION AVAILABLE BEFORE
+        # THE CANDLE BEING PREDICTED
+        # -------------------------------------------------
 
         train = data.iloc[:i]
 
-        test = data.iloc[
-            i:min(
-                i + step,
-                len(data) - 1
-            )
-        ]
-
-        if len(test) == 0:
+        if len(train) < min_train:
 
             continue
 
-        ytrain = (
+        # =================================================
+        # TRAINING TARGET
+        # =================================================
+
+        y_train = (
             train["target"]
             .map({
                 -1: 0,
@@ -560,171 +598,373 @@ def walk_forward_backtest(
             .astype(int)
         )
 
-        if ytrain.nunique() < 2:
+        if y_train.nunique() < 2:
 
             continue
 
         # =================================================
-        # ONE FAST MODEL FOR VALIDATION
-        #
-        # Live prediction still uses THREE models.
+        # THREE MODELS — SAME AS LIVE V7
         # =================================================
 
-        model = _classifier(
-            random_state=42,
-            max_iter=80,
-            learning_rate=0.04,
-            max_leaf_nodes=10,
-            min_samples_leaf=25,
-            l2_regularization=1.5
-        )
+        classifiers = [
 
-        model.fit(
-            train[cols],
-            ytrain
-        )
+            _classifier(
+                random_state=42,
+                max_iter=120,
+                learning_rate=0.04,
+                max_leaf_nodes=12,
+                min_samples_leaf=25,
+                l2_regularization=1.5
+            ),
 
-        probabilities = model.predict_proba(
-            test[cols]
-        )
+            _classifier(
+                random_state=123,
+                max_iter=140,
+                learning_rate=0.03,
+                max_leaf_nodes=10,
+                min_samples_leaf=30,
+                l2_regularization=2.0
+            ),
 
-        pred = np.argmax(
+            _classifier(
+                random_state=321,
+                max_iter=110,
+                learning_rate=0.05,
+                max_leaf_nodes=10,
+                min_samples_leaf=20,
+                l2_regularization=1.0
+            )
+        ]
+
+        # =================================================
+        # TRAIN
+        # =================================================
+
+        for model in classifiers:
+
+            model.fit(
+                train[cols],
+                y_train
+            )
+
+        # =================================================
+        # CURRENT HISTORICAL CANDLE
+        # =================================================
+
+        current = data.iloc[[i]]
+
+        # =================================================
+        # PREDICT
+        # =================================================
+
+        probabilities = []
+
+        for model in classifiers:
+
+            probabilities.append(
+                model.predict_proba(
+                    current[cols]
+                )[0]
+            )
+
+        avg_probability = np.mean(
             probabilities,
-            axis=1
-        )
-
-        actual = (
-            test["target"]
-            .map({
-                -1: 0,
-                0: 1,
-                1: 2
-            })
-            .astype(int)
-            .tolist()
-        )
-
-        preds.extend(
-            pred.tolist()
-        )
-
-        actuals.extend(
-            actual
-        )
-
-        confidence = probabilities.max(
-            axis=1
+            axis=0
         )
 
         # =================================================
-        # HIGH-CONFIDENCE SIGNALS
+        # PROBABILITY MAPPING
         # =================================================
 
-        for pp, yy, cc in zip(
-            pred,
-            actual,
-            confidence
+        mapping = {
+            int(k): float(v)
+            for k, v in zip(
+                classifiers[0].classes_,
+                avg_probability
+            )
+        }
+
+        probs = {
+
+            "bearish": mapping.get(
+                0,
+                0.0
+            ),
+
+            "neutral": mapping.get(
+                1,
+                0.0
+            ),
+
+            "bullish": mapping.get(
+                2,
+                0.0
+            )
+        }
+
+        # =================================================
+        # BEST PREDICTION
+        # =================================================
+
+        best = max(
+            probs,
+            key=probs.get
+        )
+
+        confidence = float(
+            probs[best]
+        )
+
+        prediction = best.upper()
+
+        # =================================================
+        # MODEL AGREEMENT
+        # =================================================
+
+        individual_predictions = []
+
+        for model in classifiers:
+
+            p = model.predict_proba(
+                current[cols]
+            )[0]
+
+            individual_predictions.append(
+                int(
+                    np.argmax(p)
+                )
+            )
+
+        class_map = {
+            "BEARISH": 0,
+            "NEUTRAL": 1,
+            "BULLISH": 2
+        }
+
+        agreement_count = (
+            individual_predictions.count(
+                class_map[prediction]
+            )
+        )
+
+        # =================================================
+        # SIGNAL
+        # =================================================
+
+        if (
+            confidence >= signal_threshold
+            and agreement_count >= 2
         ):
 
-            pp = int(pp)
-            yy = int(yy)
-            cc = float(cc)
+            signal = prediction
 
-            if cc >= signal_threshold:
+        else:
 
-                signal_preds.append(
-                    (pp, yy)
-                )
+            signal = "NO EDGE"
 
-                if pp == 2:
+        # =================================================
+        # ACTUAL NEXT CANDLE
+        # =================================================
 
-                    bullish.append(
-                        pp == yy
-                    )
+        actual = str(
+            current[
+                "actual_direction"
+            ].iloc[0]
+        )
 
-                elif pp == 0:
+        # =================================================
+        # CORRECT?
+        # =================================================
 
-                    bearish.append(
-                        pp == yy
-                    )
+        correct = (
+            prediction == actual
+        )
 
-                else:
+        signal_correct = (
+            signal != "NO EDGE"
+            and signal == actual
+        )
 
-                    neutral.append(
-                        pp == yy
-                    )
+        # =================================================
+        # SAVE TEST
+        # =================================================
+
+        results.append({
+
+            "test": len(results) + 1,
+
+            "timestamp": str(
+                current[
+                    "timestamp"
+                ].iloc[0]
+            ),
+
+            "prediction": prediction,
+
+            "confidence": confidence,
+
+            "signal": signal,
+
+            "agreement": agreement_count,
+
+            "actual": actual,
+
+            "correct": bool(
+                correct
+            ),
+
+            "signal_correct": bool(
+                signal_correct
+            ),
+
+            "next_open": float(
+                current[
+                    "next_open"
+                ].iloc[0]
+            ),
+
+            "next_close": float(
+                current[
+                    "next_close"
+                ].iloc[0]
+            )
+        })
+
+    # =====================================================
+    # NO RESULTS
+    # =====================================================
+
+    if not results:
+
+        return _empty_backtest()
+
+    result_df = pd.DataFrame(
+        results
+    )
 
     # =====================================================
     # OVERALL ACCURACY
     # =====================================================
 
-    accuracy = (
-
-        float(
-            np.mean(
-                np.array(preds)
-                == np.array(actuals)
-            )
-        )
-
-        if preds
-
-        else 0.0
+    accuracy = float(
+        result_df[
+            "correct"
+        ].mean()
     )
 
     # =====================================================
-    # SIGNAL ACCURACY
+    # HIGH-CONFIDENCE SIGNALS
     # =====================================================
 
-    signal_accuracy = (
+    signal_df = result_df[
+        result_df[
+            "signal"
+        ] != "NO EDGE"
+    ]
 
-        float(
-            np.mean([
-                p == y
-                for p, y in signal_preds
-            ])
+    if len(signal_df) > 0:
+
+        signal_accuracy = float(
+            signal_df[
+                "signal_correct"
+            ].mean()
         )
 
-        if signal_preds
+    else:
 
-        else 0.0
-    )
+        signal_accuracy = 0.0
 
     # =====================================================
-    # RETURN RESULTS
+    # BULLISH PREDICTIONS
+    # =====================================================
+
+    bullish_df = result_df[
+        result_df[
+            "prediction"
+        ] == "BULLISH"
+    ]
+
+    # =====================================================
+    # BEARISH PREDICTIONS
+    # =====================================================
+
+    bearish_df = result_df[
+        result_df[
+            "prediction"
+        ] == "BEARISH"
+    ]
+
+    # =====================================================
+    # NEUTRAL PREDICTIONS
+    # =====================================================
+
+    neutral_df = result_df[
+        result_df[
+            "prediction"
+        ] == "NEUTRAL"
+    ]
+
+    # =====================================================
+    # RETURN
     # =====================================================
 
     return {
 
-        "predictions": len(preds),
+        "predictions": len(
+            result_df
+        ),
 
         "accuracy": accuracy,
 
-        "signals": len(signal_preds),
+        "signals": len(
+            signal_df
+        ),
 
-        "signal_accuracy": signal_accuracy,
+        "signal_accuracy": (
+            signal_accuracy
+        ),
 
-        "bullish_signals": len(bullish),
+        "bullish_signals": len(
+            bullish_df
+        ),
 
         "bullish_accuracy": (
-            float(np.mean(bullish))
-            if bullish
+            float(
+                bullish_df[
+                    "correct"
+                ].mean()
+            )
+            if len(bullish_df) > 0
             else 0.0
         ),
 
-        "bearish_signals": len(bearish),
+        "bearish_signals": len(
+            bearish_df
+        ),
 
         "bearish_accuracy": (
-            float(np.mean(bearish))
-            if bearish
+            float(
+                bearish_df[
+                    "correct"
+                ].mean()
+            )
+            if len(bearish_df) > 0
             else 0.0
         ),
 
-        "neutral_signals": len(neutral),
+        "neutral_signals": len(
+            neutral_df
+        ),
 
         "neutral_accuracy": (
-            float(np.mean(neutral))
-            if neutral
+            float(
+                neutral_df[
+                    "correct"
+                ].mean()
+            )
+            if len(neutral_df) > 0
             else 0.0
-        )
+        ),
+
+        "test_results": results
     }
