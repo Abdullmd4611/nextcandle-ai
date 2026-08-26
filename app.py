@@ -15,7 +15,8 @@ st.set_page_config(
 
 st.title("📈 NextCandle AI — V1")
 st.caption(
-    "Probability engine for the direction of the next completed candle. "
+    "ACEUSDT 15-minute next-candle probability "
+    "with 4-hour higher-timeframe bias. "
     "Research/paper-trading only."
 )
 
@@ -29,19 +30,15 @@ with st.sidebar:
     ).upper().strip()
 
     timeframe = st.selectbox(
-        "Timeframe",
-        ["15 minutes", "4 hours"],
+        "Prediction timeframe",
+        ["15 minutes"],
         index=0
     )
 
-    interval = (
-        "Min15"
-        if timeframe == "15 minutes"
-        else "Hour4"
-    )
+    interval = "Min15"
 
     history = st.slider(
-        "Historical candles",
+        "15M historical candles",
         1000,
         10000,
         5000,
@@ -65,18 +62,30 @@ with st.sidebar:
 if run or "result" not in st.session_state:
 
     with st.spinner(
-        "Downloading candles and training V1..."
+        "Downloading ACEUSDT 15M + 4H candles and training V1..."
     ):
 
         try:
 
-            raw = fetch_klines(
+            # 15-minute prediction data
+            raw_15m = fetch_klines(
                 symbol,
-                interval,
+                "Min15",
                 history
             )
 
-            df = make_features(raw)
+            # 4-hour higher-timeframe data
+            raw_4h = fetch_klines(
+                symbol,
+                "Hour4",
+                500
+            )
+
+            # Build 15M features + 4H bias
+            df = make_features(
+                raw_15m,
+                raw_4h
+            )
 
             model, feature_cols, metrics = train_model(
                 df
@@ -146,21 +155,49 @@ st.divider()
 if signal == "BULLISH":
 
     st.success(
-        f"NEXT CANDLE BIAS: 🟢 BULLISH — "
+        f"NEXT 15M CANDLE BIAS: 🟢 BULLISH — "
         f"{probs['bullish'] * 100:.1f}%"
     )
 
 elif signal == "BEARISH":
 
     st.error(
-        f"NEXT CANDLE BIAS: 🔴 BEARISH — "
+        f"NEXT 15M CANDLE BIAS: 🔴 BEARISH — "
         f"{probs['bearish'] * 100:.1f}%"
     )
 
 else:
 
     st.warning(
-        "NEXT CANDLE: ⚪ NO EDGE — WAIT"
+        "NEXT 15M CANDLE: ⚪ NO EDGE — WAIT"
+    )
+
+
+st.subheader("🧭 4-Hour Market Bias")
+
+if "htf_ema_gap20" in df.columns:
+
+    latest = df.iloc[-1]
+
+    if latest["htf_ema_gap20"] > 0:
+        st.success(
+            "4H BIAS: 🟢 BULLISH"
+        )
+    else:
+        st.error(
+            "4H BIAS: 🔴 BEARISH"
+        )
+
+    htf_gap = latest["htf_ema_gap20"] * 100
+
+    st.write(
+        f"4H EMA20 distance: **{htf_gap:.2f}%**"
+    )
+
+else:
+
+    st.warning(
+        "4H bias data unavailable."
     )
 
 
@@ -226,8 +263,7 @@ with right:
         )
 
 
-st.subheader("Recent candles")
-
+st.subheader("Recent ACEUSDT 15M Candles")
 
 st.dataframe(
     df[
@@ -245,6 +281,6 @@ st.dataframe(
 
 
 st.caption(
-    "V1 intentionally does not place orders. "
-    "Probability is an estimate, not a guarantee."
+    "V1 does not place orders. Probabilities are estimates, "
+    "not guarantees."
 )
