@@ -83,6 +83,10 @@ if run or "result" not in st.session_state:
 
         try:
 
+            # -------------------------------------------------
+            # DOWNLOAD DATA
+            # -------------------------------------------------
+
             raw_15m = fetch_klines(
                 symbol,
                 "Min15",
@@ -95,40 +99,111 @@ if run or "result" not in st.session_state:
                 500
             )
 
+            # -------------------------------------------------
+            # FEATURES
+            # -------------------------------------------------
+
             df = make_features(
                 raw_15m,
                 raw_4h
             )
 
             if len(df) < 500:
+
                 raise ValueError(
                     "Not enough clean historical candles."
                 )
+
+            # -------------------------------------------------
+            # TRAIN MODEL
+            # -------------------------------------------------
 
             models, feature_cols, metrics = train_model(
                 df
             )
 
-            # IMPORTANT:
-            # Current model.py returns FIVE values.
-            (
-                probs,
-                ml_signal,
-                expected_open,
-                predicted_close,
-                expected_move_pct
-            ) = predict_next(
+            # -------------------------------------------------
+            # PREDICT NEXT CANDLE
+            #
+            # V7 supports BOTH:
+            #   5 returned values
+            #   8 returned values
+            # -------------------------------------------------
+
+            prediction = predict_next(
                 models,
                 df,
                 feature_cols,
                 threshold
             )
 
+            if not isinstance(
+                prediction,
+                (tuple, list)
+            ):
+
+                raise ValueError(
+                    "predict_next() must return a tuple/list."
+                )
+
+            # =================================================
+            # 8-VALUE VERSION
+            # =================================================
+
+            if len(prediction) == 8:
+
+                (
+                    probs,
+                    ml_signal,
+                    expected_open,
+                    predicted_close,
+                    expected_move_pct,
+                    agreement_count,
+                    individual_predictions,
+                    predicted_return
+                ) = prediction
+
+            # =================================================
+            # 5-VALUE VERSION
+            # =================================================
+
+            elif len(prediction) == 5:
+
+                (
+                    probs,
+                    ml_signal,
+                    expected_open,
+                    predicted_close,
+                    expected_move_pct
+                ) = prediction
+
+                agreement_count = None
+                individual_predictions = None
+                predicted_return = (
+                    expected_move_pct / 100
+                )
+
+            else:
+
+                raise ValueError(
+                    "predict_next() returned "
+                    f"{len(prediction)} values. "
+                    "Expected 5 or 8."
+                )
+
+            # -------------------------------------------------
+            # BACKTEST
+            # -------------------------------------------------
+
             bt = walk_forward_backtest(
                 df,
                 feature_cols,
                 signal_threshold=threshold
             )
+
+            # -------------------------------------------------
+            # SAVE RESULT
+            # -------------------------------------------------
 
             st.session_state.result = (
                 df,
@@ -138,7 +213,10 @@ if run or "result" not in st.session_state:
                 predicted_close,
                 expected_move_pct,
                 metrics,
-                bt
+                bt,
+                agreement_count,
+                individual_predictions,
+                predicted_return
             )
 
         except Exception as e:
@@ -154,16 +232,61 @@ if run or "result" not in st.session_state:
 # LOAD RESULT
 # =========================================================
 
-(
-    df,
-    probs,
-    ml_signal,
-    expected_open,
-    predicted_close,
-    expected_move_pct,
-    metrics,
-    bt
-) = st.session_state.result
+saved_result = st.session_state.result
+
+
+# =========================================================
+# SUPPORT OLD SESSION DATA
+# =========================================================
+
+if len(saved_result) == 8:
+
+    (
+        df,
+        probs,
+        ml_signal,
+        expected_open,
+        predicted_close,
+        expected_move_pct,
+        metrics,
+        bt
+    ) = saved_result
+
+    agreement_count = None
+    individual_predictions = None
+    predicted_return = (
+        expected_move_pct / 100
+    )
+
+elif len(saved_result) == 11:
+
+    (
+        df,
+        probs,
+        ml_signal,
+        expected_open,
+        predicted_close,
+        expected_move_pct,
+        metrics,
+        bt,
+        agreement_count,
+        individual_predictions,
+        predicted_return
+    ) = saved_result
+
+else:
+
+    st.session_state.pop(
+        "result",
+        None
+    )
+
+    st.error(
+        "Old V7 session data detected. "
+        "Please click 🚀 Run / Refresh."
+    )
+
+    st.stop()
 
 
 latest = df.iloc[-1]
@@ -180,6 +303,7 @@ htf_score = latest.get(
 
 if pd.isna(htf_score):
     htf_score = 0
+
 
 if htf_score >= 2:
 
@@ -207,7 +331,7 @@ current_close = float(
 
 
 # =========================================================
-# MAIN PREDICTION
+# MAIN NEXT 15M PREDICTION
 # =========================================================
 
 st.divider()
@@ -256,25 +380,33 @@ else:
 
 c1, c2, c3, c4 = st.columns(4)
 
+
 with c1:
+
     st.metric(
         "ML Confidence",
         f"{confidence * 100:.1f}%"
     )
 
+
 with c2:
+
     st.metric(
         "🧭 4H Context",
         f"{htf_icon} {htf_bias}"
     )
 
+
 with c3:
+
     st.metric(
         "🤖 Ensemble",
         f"{metrics.get('ensemble_models', 3)} models"
     )
 
+
 with c4:
+
     st.metric(
         "🎯 Threshold",
         f"{threshold * 100:.0f}%"
@@ -282,7 +414,7 @@ with c4:
 
 
 # =========================================================
-# NEXT CANDLE PRICE
+# NEXT CANDLE PRICE ESTIMATE
 # =========================================================
 
 st.divider()
@@ -304,7 +436,7 @@ with q1:
 
     st.metric(
         "Current / Expected Open",
-        f"{expected_open:.8f}"
+        f"{float(expected_open):.8f}"
     )
 
 
@@ -328,7 +460,7 @@ with q2:
 
     st.metric(
         "Predicted Close",
-        f"{predicted_close:.8f}",
+        f"{float(predicted_close):.8f}",
         delta=delta_text
     )
 
@@ -368,8 +500,13 @@ st.info(
 )
 
 
+# =========================================================
+# PRICE DIFFERENCE
+# =========================================================
+
 price_difference = (
-    predicted_close - current_close
+    float(predicted_close)
+    - current_close
 )
 
 st.write(
@@ -396,7 +533,7 @@ with p1:
 
     st.metric(
         "🟢 Bullish",
-        f"{probs['bullish'] * 100:.2f}%"
+        f"{probs.get('bullish', 0) * 100:.2f}%"
     )
 
 
@@ -404,7 +541,7 @@ with p2:
 
     st.metric(
         "⚪ Neutral",
-        f"{probs['neutral'] * 100:.2f}%"
+        f"{probs.get('neutral', 0) * 100:.2f}%"
     )
 
 
@@ -412,7 +549,25 @@ with p3:
 
     st.metric(
         "🔴 Bearish",
-        f"{probs['bearish'] * 100:.2f}%"
+        f"{probs.get('bearish', 0) * 100:.2f}%"
+    )
+
+
+# =========================================================
+# MODEL AGREEMENT
+# =========================================================
+
+if agreement_count is not None:
+
+    st.divider()
+
+    st.subheader(
+        "🤝 Model Agreement"
+    )
+
+    st.write(
+        f"Models agreeing with the final direction: "
+        f"**{agreement_count}/3**"
     )
 
 
@@ -427,7 +582,8 @@ st.subheader(
 )
 
 st.write(
-    "V7 predicts the direction of the NEXT 15-minute candle."
+    "V7 predicts the direction of the NEXT "
+    "15-minute candle."
 )
 
 st.write(
@@ -441,7 +597,8 @@ st.write(
 )
 
 st.write(
-    "The 4H timeframe provides higher-timeframe context."
+    "The 4H timeframe provides higher-timeframe "
+    "context to the prediction system."
 )
 
 
@@ -503,7 +660,8 @@ st.write(
 )
 
 st.caption(
-    "4H data is used as context for the NEXT 15M prediction."
+    "4H data is used as context for the "
+    "NEXT 15M prediction."
 )
 
 
@@ -666,5 +824,6 @@ st.dataframe(
 st.caption(
     "V7 is a research/paper-trading model. "
     "Predictions, probabilities and price estimates "
-    "are not guarantees of future market movement."
-)
+    "are model estimates and are not guarantees of "
+    "future market movement."
+    )
