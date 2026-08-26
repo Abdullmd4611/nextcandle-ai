@@ -5,6 +5,10 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score
 
 
+# =========================================================
+# COLUMNS THAT MUST NEVER BE USED AS MODEL FEATURES
+# =========================================================
+
 EXCLUDE = {
     "timestamp",
     "open",
@@ -17,26 +21,66 @@ EXCLUDE = {
 }
 
 
+# =========================================================
+# FEATURE SELECTION
+# =========================================================
+
 def feature_columns(df):
+
     return [
-        c for c in df.columns
+        c
+        for c in df.columns
         if c not in EXCLUDE
         and pd.api.types.is_numeric_dtype(df[c])
     ]
 
 
+# =========================================================
+# TRAIN MODEL
+# =========================================================
+
 def train_model(df):
 
     cols = feature_columns(df)
 
-    X = df[cols]
-    y = df["target"].map({
-        -1: 0,
-        0: 1,
-        1: 2
+    if not cols:
+        raise ValueError(
+            "No usable model features were found."
+        )
+
+    if "target" not in df.columns:
+        raise ValueError(
+            "Target column is missing."
+        )
+
+    data = df.dropna(
+        subset=cols + ["target"]
+    ).copy()
+
+    if len(data) < 300:
+        raise ValueError(
+            "Not enough clean historical candles "
+            "to train the model."
+        )
+
+    X = data[cols]
+
+    y = data["target"].map({
+        -1: 0,   # BEARISH
+         0: 1,   # NEUTRAL
+         1: 2    # BULLISH
     }).astype(int)
 
-    split = int(len(df) * 0.80)
+    # ---------------------------------------------------------
+    # CHRONOLOGICAL SPLIT
+    # ---------------------------------------------------------
+
+    split = int(len(data) * 0.80)
+
+    if split <= 0 or split >= len(data):
+        raise ValueError(
+            "Invalid chronological train/test split."
+        )
 
     X_train = X.iloc[:split]
     X_test = X.iloc[split:]
@@ -44,29 +88,51 @@ def train_model(df):
     y_train = y.iloc[:split]
     y_test = y.iloc[split:]
 
+    # ---------------------------------------------------------
+    # MODEL
+    # ---------------------------------------------------------
+
     model = HistGradientBoostingClassifier(
-        max_iter=150,
-        learning_rate=0.05,
-        max_leaf_nodes=12,
-        l2_regularization=1.0,
+        max_iter=250,
+        learning_rate=0.04,
+        max_leaf_nodes=15,
+        min_samples_leaf=25,
+        l2_regularization=1.5,
         random_state=42
     )
 
-    model.fit(X_train, y_train)
+    model.fit(
+        X_train,
+        y_train
+    )
 
-    pred = model.predict(X_test)
+    pred = model.predict(
+        X_test
+    )
+
+    accuracy = accuracy_score(
+        y_test,
+        pred
+    )
 
     metrics = {
-        "holdout_accuracy": accuracy_score(
-            y_test,
-            pred
+        "holdout_accuracy": float(
+            accuracy
         ),
-        "holdout_samples": len(y_test),
-        "train_samples": len(y_train)
+        "holdout_samples": int(
+            len(y_test)
+        ),
+        "train_samples": int(
+            len(y_train)
+        )
     }
 
     return model, cols, metrics
 
+
+# =========================================================
+# NEXT 15-MINUTE PREDICTION
+# =========================================================
 
 def predict_next(
     model,
@@ -75,22 +141,43 @@ def predict_next(
     threshold=0.65
 ):
 
+    if len(df) == 0:
+        raise ValueError(
+            "No candle data available for prediction."
+        )
+
     latest = df[cols].iloc[[-1]]
 
-    p = model.predict_proba(latest)[0]
+    if latest.isnull().any().any():
+        raise ValueError(
+            "Latest candle contains missing features."
+        )
+
+    probabilities = model.predict_proba(
+        latest
+    )[0]
 
     mapping = {
         int(k): float(v)
         for k, v in zip(
             model.classes_,
-            p
+            probabilities
         )
     }
 
     probs = {
-        "bearish": mapping.get(0, 0.0),
-        "neutral": mapping.get(1, 0.0),
-        "bullish": mapping.get(2, 0.0),
+        "bearish": mapping.get(
+            0,
+            0.0
+        ),
+        "neutral": mapping.get(
+            1,
+            0.0
+        ),
+        "bullish": mapping.get(
+            2,
+            0.0
+        ),
     }
 
     best = max(
@@ -98,23 +185,38 @@ def predict_next(
         key=probs.get
     )
 
-    signal = (
-        best.upper()
-        if probs[best] >= threshold
-        else "NO EDGE"
+    confidence = float(
+        probs[best]
     )
+
+    if confidence >= threshold:
+
+        signal = best.upper()
+
+    else:
+
+        signal = "NO EDGE"
 
     return probs, signal
 
+
+# =========================================================
+# WALK-FORWARD BACKTEST
+# =========================================================
 
 def walk_forward_backtest(
     df,
     cols,
     min_train=1000,
-    step=50
+    step=50,
+    signal_threshold=0.65
 ):
 
-    if len(df) <= min_train + step:
+    data = df.dropna(
+        subset=cols + ["target"]
+    ).copy()
+
+    if len(data) <= min_train + step:
 
         return {
             "predictions": 0,
@@ -127,29 +229,52 @@ def walk_forward_backtest(
     actuals = []
     signal_preds = []
 
+    # ---------------------------------------------------------
+    # WALK FORWARD
+    #
+    # At every step:
+    #   train ONLY on candles before the test window.
+    #
+    # No future candles are placed into training.
+    # ---------------------------------------------------------
+
     for i in range(
         min_train,
-        len(df) - 1,
+        len(data) - 1,
         step
     ):
 
-        train = df.iloc[:i]
+        train = data.iloc[:i]
 
-        test = df.iloc[
-            i:min(i + step, len(df) - 1)
+        test = data.iloc[
+            i:min(
+                i + step,
+                len(data) - 1
+            )
         ]
+
+        if len(test) == 0:
+            continue
 
         ytrain = train["target"].map({
             -1: 0,
-            0: 1,
-            1: 2
+             0: 1,
+             1: 2
         }).astype(int)
 
+        # -----------------------------------------------------
+        # Skip windows where training contains only one class.
+        # -----------------------------------------------------
+
+        if ytrain.nunique() < 2:
+            continue
+
         model = HistGradientBoostingClassifier(
-            max_iter=100,
-            learning_rate=0.06,
-            max_leaf_nodes=12,
-            l2_regularization=1.0,
+            max_iter=150,
+            learning_rate=0.05,
+            max_leaf_nodes=15,
+            min_samples_leaf=25,
+            l2_regularization=1.5,
             random_state=42
         )
 
@@ -170,35 +295,43 @@ def walk_forward_backtest(
             pred.tolist()
         )
 
-        actuals.extend(
+        actual = (
             test["target"]
             .map({
                 -1: 0,
-                0: 1,
-                1: 2
+                 0: 1,
+                 1: 2
             })
             .astype(int)
             .tolist()
         )
 
-        confidence = p.max(axis=1)
+        actuals.extend(
+            actual
+        )
+
+        confidence = p.max(
+            axis=1
+        )
 
         for pp, yy, cc in zip(
             pred,
-            test["target"]
-            .map({
-                -1: 0,
-                0: 1,
-                1: 2
-            }),
+            actual,
             confidence
         ):
 
-            if cc >= 0.65:
+            if cc >= signal_threshold:
 
                 signal_preds.append(
-                    (pp, int(yy))
+                    (
+                        int(pp),
+                        int(yy)
+                    )
                 )
+
+    # =========================================================
+    # OVERALL ACCURACY
+    # =========================================================
 
     accuracy = (
         float(
@@ -210,6 +343,10 @@ def walk_forward_backtest(
         if preds
         else 0.0
     )
+
+    # =========================================================
+    # HIGH-CONFIDENCE SIGNAL ACCURACY
+    # =========================================================
 
     signal_accuracy = (
         float(
@@ -224,8 +361,12 @@ def walk_forward_backtest(
     )
 
     return {
-        "predictions": len(preds),
+        "predictions": int(
+            len(preds)
+        ),
         "accuracy": accuracy,
-        "signals": len(signal_preds),
+        "signals": int(
+            len(signal_preds)
+        ),
         "signal_accuracy": signal_accuracy
     }
