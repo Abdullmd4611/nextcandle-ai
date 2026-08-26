@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from nextcandle.data import fetch_klines
-from nextcandle.features import make_features
-from nextcandle.model import train_model, predict_next, walk_forward_backtest
+from data import fetch_klines
+from features import make_features
+from model import train_model, predict_next, walk_forward_backtest
 
 st.set_page_config(page_title="NextCandle AI", page_icon="📈", layout="wide")
 st.title("📈 NextCandle AI — V1")
