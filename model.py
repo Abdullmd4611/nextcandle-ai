@@ -1,5 +1,5 @@
-import numpy as np
 import pandas as pd
+import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score
 
