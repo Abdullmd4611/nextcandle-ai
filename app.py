@@ -2,8 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
+from datetime import datetime, timezone
+
 from data import fetch_klines
 from features import make_features
+
 from model import (
     train_model,
     predict_next,
@@ -22,11 +25,13 @@ st.set_page_config(
 )
 
 
-st.title("📈 NextCandle AI — V7")
+st.title(
+    "📈 NextCandle AI — V7"
+)
 
 st.caption(
-    "AI prediction focused ONLY on the NEXT 15-minute candle. "
-    "Direction + estimated open + close + price range. "
+    "AI prediction of the NEXT 15-minute candle. "
+    "Direction + predicted OHLC + expected move. "
     "Research/paper-trading only."
 )
 
@@ -37,7 +42,9 @@ st.caption(
 
 with st.sidebar:
 
-    st.header("⚙️ V7 Settings")
+    st.header(
+        "⚙️ Settings"
+    )
 
     symbol = st.text_input(
         "Trading pair",
@@ -51,7 +58,7 @@ with st.sidebar:
     )
 
     history = st.slider(
-        "Historical 15M candles",
+        "15M historical candles",
         1000,
         10000,
         5000,
@@ -61,13 +68,13 @@ with st.sidebar:
     threshold = st.slider(
         "Minimum confidence",
         0.50,
-        0.95,
+        0.90,
         0.65,
         0.01
     )
 
     run = st.button(
-        "🚀 Predict NEXT 15M",
+        "🚀 Run / Refresh",
         type="primary"
     )
 
@@ -76,16 +83,22 @@ with st.sidebar:
 # BUILD V7
 # =========================================================
 
-if run or "result" not in st.session_state:
+if (
+    run
+    or "result" not in st.session_state
+    or st.session_state.get(
+        "last_symbol"
+    ) != symbol
+):
 
     with st.spinner(
-        "Downloading candles and building V7 NEXT-CANDLE model..."
+        "Downloading completed candles and training V7..."
     ):
 
         try:
 
             # -------------------------------------------------
-            # 15M candles
+            # 15M
             # -------------------------------------------------
 
             raw_15m = fetch_klines(
@@ -95,7 +108,7 @@ if run or "result" not in st.session_state:
             )
 
             # -------------------------------------------------
-            # 4H context used internally by the model
+            # 4H
             # -------------------------------------------------
 
             raw_4h = fetch_klines(
@@ -105,7 +118,7 @@ if run or "result" not in st.session_state:
             )
 
             # -------------------------------------------------
-            # Features
+            # FEATURES
             # -------------------------------------------------
 
             df = make_features(
@@ -120,16 +133,19 @@ if run or "result" not in st.session_state:
                 )
 
             # -------------------------------------------------
-            # Train
+            # TRAIN
             # -------------------------------------------------
 
-            models, feature_cols, metrics = train_model(
+            (
+                models,
+                feature_cols,
+                metrics
+            ) = train_model(
                 df
             )
 
             # -------------------------------------------------
-            # IMPORTANT:
-            # Current V6 model.py returns FIVE values
+            # PREDICTION
             # -------------------------------------------------
 
             (
@@ -137,7 +153,10 @@ if run or "result" not in st.session_state:
                 ml_signal,
                 expected_open,
                 predicted_close,
-                expected_move_pct
+                expected_move_pct,
+                predicted_high,
+                predicted_low,
+                agreement_count
             ) = predict_next(
                 models,
                 df,
@@ -146,7 +165,7 @@ if run or "result" not in st.session_state:
             )
 
             # -------------------------------------------------
-            # Backtest
+            # BACKTEST
             # -------------------------------------------------
 
             bt = walk_forward_backtest(
@@ -156,7 +175,7 @@ if run or "result" not in st.session_state:
             )
 
             # -------------------------------------------------
-            # Save
+            # SAVE
             # -------------------------------------------------
 
             st.session_state.result = (
@@ -166,9 +185,14 @@ if run or "result" not in st.session_state:
                 expected_open,
                 predicted_close,
                 expected_move_pct,
+                predicted_high,
+                predicted_low,
+                agreement_count,
                 metrics,
                 bt
             )
+
+            st.session_state.last_symbol = symbol
 
         except Exception as e:
 
@@ -190,6 +214,9 @@ if run or "result" not in st.session_state:
     expected_open,
     predicted_close,
     expected_move_pct,
+    predicted_high,
+    predicted_low,
+    agreement_count,
     metrics,
     bt
 ) = st.session_state.result
@@ -198,71 +225,92 @@ if run or "result" not in st.session_state:
 latest = df.iloc[-1]
 
 
-# =========================================================
-# CURRENT PRICE
-# =========================================================
-
-current_price = float(
+current_close = float(
     latest["close"]
 )
 
 
 # =========================================================
-# VOLATILITY FOR ESTIMATED RANGE
+# 4H CONTEXT
 # =========================================================
 
-atr_pct = latest.get(
-    "atr14_pct",
-    np.nan
-)
-
-if not pd.notna(atr_pct) or atr_pct <= 0:
-
-    atr_pct = (
-        df["ret1"]
-        .rolling(20)
-        .std()
-        .iloc[-1]
-    )
-
-if not pd.notna(atr_pct) or atr_pct <= 0:
-
-    atr_pct = 0.002
-
-
-atr_pct = float(
-    max(
-        atr_pct,
-        0.0005
+htf_score = float(
+    latest.get(
+        "htf_bias_score",
+        0
     )
 )
 
+if htf_score >= 2:
+
+    htf_bias = "BULLISH"
+    htf_icon = "🟢"
+
+elif htf_score <= -2:
+
+    htf_bias = "BEARISH"
+    htf_icon = "🔴"
+
+else:
+
+    htf_bias = "NEUTRAL"
+    htf_icon = "⚪"
+
 
 # =========================================================
-# ESTIMATED NEXT CANDLE RANGE
+# NEXT CANDLE TIME
 # =========================================================
 
-estimated_high = (
-    max(
-        expected_open,
-        predicted_close
+last_timestamp = pd.to_datetime(
+    latest["timestamp"],
+    utc=True
+)
+
+next_candle_time = (
+    last_timestamp
+    + pd.Timedelta(minutes=15)
+)
+
+now_utc = pd.Timestamp.now(
+    tz="UTC"
+)
+
+seconds_remaining = max(
+    0,
+    int(
+        (
+            next_candle_time
+            - now_utc
+        ).total_seconds()
     )
-    * (1 + atr_pct)
+)
+
+minutes_remaining = (
+    seconds_remaining // 60
+)
+
+seconds_part = (
+    seconds_remaining % 60
+)
+
+next_time_text = (
+    next_candle_time
+    .strftime(
+        "%H:%M UTC"
+    )
 )
 
 
-estimated_low = (
-    min(
-        expected_open,
-        predicted_close
-    )
-    * (1 - atr_pct)
+# =========================================================
+# MAIN PREDICTION
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "🎯 NEXT 15M CANDLE"
 )
 
-
-# =========================================================
-# BEST DIRECTION
-# =========================================================
 
 best_direction = max(
     probs,
@@ -271,17 +319,6 @@ best_direction = max(
 
 confidence = float(
     probs[best_direction]
-)
-
-
-# =========================================================
-# MAIN NEXT 15M PREDICTION
-# =========================================================
-
-st.divider()
-
-st.subheader(
-    "🎯 NEXT 15M CANDLE"
 )
 
 
@@ -302,10 +339,48 @@ elif ml_signal == "BEARISH":
 else:
 
     st.warning(
-        f"⚪ NEXT 15M: WAIT — "
+        f"⚪ NEXT 15M: WAIT / NO EDGE — "
         f"highest confidence "
         f"{confidence * 100:.1f}%"
     )
+
+
+# =========================================================
+# CANDLE TIMER
+# =========================================================
+
+t1, t2, t3 = st.columns(3)
+
+
+with t1:
+
+    st.metric(
+        "🕐 Next Candle Opens",
+        next_time_text
+    )
+
+
+with t2:
+
+    st.metric(
+        "⏳ Time Until Open",
+        f"{minutes_remaining}m "
+        f"{seconds_part:02d}s"
+    )
+
+
+with t3:
+
+    st.metric(
+        "🤖 Model Agreement",
+        f"{agreement_count}/3"
+    )
+
+
+st.caption(
+    "The countdown is based on the timestamp of the "
+    "latest completed 15-minute candle."
+)
 
 
 # =========================================================
@@ -318,7 +393,7 @@ c1, c2, c3, c4 = st.columns(4)
 with c1:
 
     st.metric(
-        "🎯 Direction Confidence",
+        "ML Confidence",
         f"{confidence * 100:.1f}%"
     )
 
@@ -326,40 +401,40 @@ with c1:
 with c2:
 
     st.metric(
-        "🤖 Ensemble",
-        f"{metrics.get('ensemble_models', 3)} models"
+        "🧭 4H Context",
+        f"{htf_icon} {htf_bias}"
     )
 
 
 with c3:
 
     st.metric(
-        "📊 Current Price",
-        f"{current_price:.8f}"
+        "🤖 Ensemble",
+        f"{metrics.get('ensemble_models', 3)} models"
     )
 
 
 with c4:
 
     st.metric(
-        "🎯 Required Confidence",
+        "🎯 Threshold",
         f"{threshold * 100:.0f}%"
     )
 
 
 # =========================================================
-# NEXT CANDLE PRICE PREDICTION
+# PREDICTED OHLC
 # =========================================================
 
 st.divider()
 
 st.subheader(
-    "💰 NEXT 15M CANDLE PRICE PREDICTION"
+    "💰 V7 PREDICTED NEXT-CANDLE OHLC"
 )
 
 st.caption(
-    "Estimated prices for the candle immediately after "
-    "the current 15-minute candle."
+    "These prices are produced by separate regression "
+    "models trained on historical completed candles."
 )
 
 
@@ -369,44 +444,55 @@ q1, q2, q3, q4 = st.columns(4)
 with q1:
 
     st.metric(
-        "🔓 Expected Open",
+        "Predicted Open",
         f"{expected_open:.8f}"
     )
 
 
 with q2:
 
-    close_delta = (
-        predicted_close
-        - current_price
-    )
-
     st.metric(
-        "🔒 Predicted Close",
-        f"{predicted_close:.8f}",
-        delta=f"{close_delta:+.8f}"
+        "Predicted High",
+        f"{predicted_high:.8f}"
     )
 
 
 with q3:
 
     st.metric(
-        "📈 Estimated High",
-        f"{estimated_high:.8f}"
+        "Predicted Low",
+        f"{predicted_low:.8f}"
     )
 
 
 with q4:
 
+    delta_text = (
+        f"{expected_move_pct:+.3f}%"
+    )
+
     st.metric(
-        "📉 Estimated Low",
-        f"{estimated_low:.8f}"
+        "Predicted Close",
+        f"{predicted_close:.8f}",
+        delta=delta_text
     )
 
 
 # =========================================================
-# EXPECTED MOVE
+# CURRENT PRICE
 # =========================================================
+
+st.write(
+    f"Current completed-candle close: "
+    f"**{current_close:.8f}**"
+)
+
+
+price_difference = (
+    predicted_close
+    - current_close
+)
+
 
 if expected_move_pct > 0:
 
@@ -425,31 +511,27 @@ else:
 
 
 st.info(
-    f"{move_icon} NEXT 15M expected move: "
-    f"**{expected_move_pct:+.3f}% {move_direction}**"
-)
-
-
-price_difference = (
-    predicted_close
-    - current_price
+    f"{move_icon} V7 expects the NEXT 15M "
+    f"close to move approximately "
+    f"**{expected_move_pct:+.3f}% {move_direction}** "
+    f"from the current completed-candle close."
 )
 
 
 st.write(
-    f"Estimated close difference from current price: "
+    f"Estimated close difference: "
     f"**{price_difference:+.8f}**"
 )
 
 
 # =========================================================
-# PROBABILITY BREAKDOWN
+# PROBABILITIES
 # =========================================================
 
 st.divider()
 
 st.subheader(
-    "🤖 V7 NEXT-CANDLE PROBABILITY"
+    "🤖 V7 Probability Breakdown"
 )
 
 
@@ -459,7 +541,7 @@ p1, p2, p3 = st.columns(3)
 with p1:
 
     st.metric(
-        "🟢 BULLISH",
+        "🟢 Bullish",
         f"{probs['bullish'] * 100:.2f}%"
     )
 
@@ -467,7 +549,7 @@ with p1:
 with p2:
 
     st.metric(
-        "⚪ NEUTRAL",
+        "⚪ Neutral",
         f"{probs['neutral'] * 100:.2f}%"
     )
 
@@ -475,108 +557,94 @@ with p2:
 with p3:
 
     st.metric(
-        "🔴 BEARISH",
+        "🔴 Bearish",
         f"{probs['bearish'] * 100:.2f}%"
     )
 
 
 # =========================================================
-# V7 DECISION
+# ENGINE
 # =========================================================
 
 st.divider()
 
 st.subheader(
-    "🧠 V7 DECISION"
+    "🧠 V7 Prediction Engine"
 )
 
+st.write(
+    "V7 uses three classification models to estimate "
+    "the probability that the NEXT 15-minute candle "
+    "will be bullish, neutral or bearish."
+)
+
+st.write(
+    "Four separate regression models estimate the "
+    "NEXT candle's Open, High, Low and Close."
+)
+
+st.write(
+    "Only completed 15-minute candles are used for "
+    "training and the latest prediction."
+)
+
+st.write(
+    "The 4H timeframe provides higher-timeframe context."
+)
 
 if ml_signal == "BULLISH":
 
     st.success(
-        f"🎯 **NEXT 15M: 🟢 BULLISH — "
-        f"{confidence * 100:.1f}%**"
-    )
-
-    st.write(
-        "The V7 ensemble currently gives the highest "
-        "probability to a bullish close for the NEXT "
-        "15-minute candle."
+        f"🎯 V7 currently favors a BULLISH next candle "
+        f"with {confidence * 100:.1f}% model confidence "
+        f"and {agreement_count}/3 model agreement."
     )
 
 elif ml_signal == "BEARISH":
 
     st.error(
-        f"🎯 **NEXT 15M: 🔴 BEARISH — "
-        f"{confidence * 100:.1f}%**"
-    )
-
-    st.write(
-        "The V7 ensemble currently gives the highest "
-        "probability to a bearish close for the NEXT "
-        "15-minute candle."
+        f"🎯 V7 currently favors a BEARISH next candle "
+        f"with {confidence * 100:.1f}% model confidence "
+        f"and {agreement_count}/3 model agreement."
     )
 
 else:
 
     st.warning(
-        f"🎯 **NEXT 15M: ⚪ WAIT**"
+        f"🎯 V7 says NO EDGE. "
+        f"Highest probability: "
+        f"{confidence * 100:.1f}%. "
+        f"Model agreement: {agreement_count}/3."
     )
+
+
+# =========================================================
+# 4H CONTEXT
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "🧭 4H Context"
+)
+
+
+htf_gap = latest.get(
+    "htf_ema_gap20",
+    np.nan
+)
+
+if pd.notna(htf_gap):
 
     st.write(
-        f"The strongest probability is only "
-        f"**{confidence * 100:.1f}%**, below the required "
-        f"{threshold * 100:.0f}% confidence."
+        f"4H EMA20 distance: "
+        f"**{htf_gap * 100:.2f}%**"
     )
 
 
-# =========================================================
-# MODEL AGREEMENT
-# =========================================================
-
-st.subheader(
-    "🤖 Model Confidence"
-)
-
 st.write(
-    "V7 uses an ensemble of three classification models "
-    "to estimate the direction of the NEXT 15-minute candle."
-)
-
-st.write(
-    "A directional signal is displayed only when the "
-    "confidence reaches the selected threshold and the "
-    "ensemble has sufficient agreement."
-)
-
-
-# =========================================================
-# PRICE MODEL
-# =========================================================
-
-st.subheader(
-    "💰 Next-Candle Price Engine"
-)
-
-st.write(
-    "A separate regression model estimates the expected "
-    "percentage return of the NEXT 15-minute candle."
-)
-
-st.write(
-    f"Expected return: **{expected_move_pct:+.3f}%**"
-)
-
-st.write(
-    f"Predicted close: **{predicted_close:.8f}**"
-)
-
-st.write(
-    f"Estimated high: **{estimated_high:.8f}**"
-)
-
-st.write(
-    f"Estimated low: **{estimated_low:.8f}**"
+    f"4H bias score: "
+    f"**{htf_score:.0f}**"
 )
 
 
@@ -611,13 +679,23 @@ with left:
     )
 
     st.write(
-        f"Close-return MAE: "
-        f"**{metrics.get('close_mae_pct', 0):.4f}%**"
+        f"Open MAE: "
+        f"**{metrics.get('open_mae_pct', 0):.4f}%**"
     )
 
-    st.caption(
-        "Chronological validation. "
-        "No random shuffling."
+    st.write(
+        f"High MAE: "
+        f"**{metrics.get('high_mae_pct', 0):.4f}%**"
+    )
+
+    st.write(
+        f"Low MAE: "
+        f"**{metrics.get('low_mae_pct', 0):.4f}%**"
+    )
+
+    st.write(
+        f"Close MAE: "
+        f"**{metrics.get('close_mae_pct', 0):.4f}%**"
     )
 
 
@@ -653,7 +731,7 @@ with right:
 # =========================================================
 
 st.subheader(
-    "📊 NEXT-CANDLE Direction Backtest"
+    "📊 Direction Backtest"
 )
 
 
@@ -734,11 +812,11 @@ st.dataframe(
 
 
 # =========================================================
-# FINAL DISCLAIMER
+# DISCLAIMER
 # =========================================================
 
 st.caption(
-    "V7 is designed to predict ONLY the NEXT 15-minute "
-    "candle. Direction and price outputs are statistical "
-    "model estimates, not guaranteed future prices."
+    "V7 is a statistical research/paper-trading system. "
+    "Predicted prices, probabilities and directions are "
+    "estimates, not guarantees of future market movement."
 )
