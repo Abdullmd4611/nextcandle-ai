@@ -1,568 +1,667 @@
-import numpy as np
+import streamlit as st
 import pandas as pd
+import numpy as np
 
-from sklearn.ensemble import (
-    HistGradientBoostingClassifier,
-    HistGradientBoostingRegressor
+from data import fetch_klines
+from features import make_features
+from model import (
+    train_model,
+    predict_next,
+    walk_forward_backtest
 )
-from sklearn.metrics import accuracy_score, mean_absolute_error
 
 
-EXCLUDE = {
+st.set_page_config(
+    page_title="NextCandle AI V6",
+    page_icon="📈",
+    layout="wide"
+)
+
+
+st.title("📈 NextCandle AI — V6")
+
+st.caption(
+    "AI prediction of the NEXT 15-minute candle. "
+    "Direction + estimated open/close range. "
+    "Research/paper-trading only."
+)
+
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
+with st.sidebar:
+
+    st.header("⚙️ Settings")
+
+    symbol = st.text_input(
+        "Trading pair",
+        "ACE_USDT"
+    ).upper().strip()
+
+    st.selectbox(
+        "Prediction timeframe",
+        ["15 minutes"],
+        index=0
+    )
+
+    history = st.slider(
+        "15M historical candles",
+        1000,
+        10000,
+        5000,
+        step=500
+    )
+
+    threshold = st.slider(
+        "Minimum confidence",
+        0.50,
+        0.90,
+        0.65,
+        0.01
+    )
+
+    run = st.button(
+        "🚀 Run / Refresh",
+        type="primary"
+    )
+
+
+# =========================================================
+# BUILD V6
+# =========================================================
+
+if run or "result" not in st.session_state:
+
+    with st.spinner(
+        "Downloading candles and training V6..."
+    ):
+
+        try:
+
+            raw_15m = fetch_klines(
+                symbol,
+                "Min15",
+                history
+            )
+
+            raw_4h = fetch_klines(
+                symbol,
+                "Hour4",
+                500
+            )
+
+            df = make_features(
+                raw_15m,
+                raw_4h
+            )
+
+            if len(df) < 500:
+
+                raise ValueError(
+                    "Not enough clean historical candles."
+                )
+
+            models, feature_cols, metrics = train_model(
+                df
+            )
+
+            probs, ml_signal = predict_next(
+                models,
+                df,
+                feature_cols,
+                threshold
+            )
+
+            bt = walk_forward_backtest(
+                df,
+                feature_cols,
+                signal_threshold=threshold
+            )
+
+            st.session_state.result = (
+                df,
+                probs,
+                ml_signal,
+                metrics,
+                bt
+            )
+
+        except Exception as e:
+
+            st.error(
+                f"❌ Could not build V6 model: {e}"
+            )
+
+            st.stop()
+
+
+df, probs, ml_signal, metrics, bt = (
+    st.session_state.result
+)
+
+latest = df.iloc[-1]
+
+
+# =========================================================
+# 4H CONTEXT
+# =========================================================
+
+htf_score = latest.get(
+    "htf_bias_score",
+    0
+)
+
+if htf_score >= 2:
+
+    htf_bias = "BULLISH"
+    htf_icon = "🟢"
+
+elif htf_score <= -2:
+
+    htf_bias = "BEARISH"
+    htf_icon = "🔴"
+
+else:
+
+    htf_bias = "NEUTRAL"
+    htf_icon = "⚪"
+
+
+# =========================================================
+# NEXT CANDLE PRICE ESTIMATION
+# =========================================================
+
+current_close = float(
+    latest["close"]
+)
+
+atr_pct = latest.get(
+    "atr14_pct",
+    np.nan
+)
+
+if not pd.notna(atr_pct) or atr_pct <= 0:
+
+    atr_pct = (
+        df["ret1"]
+        .rolling(20)
+        .std()
+        .iloc[-1]
+    )
+
+if not pd.notna(atr_pct) or atr_pct <= 0:
+
+    atr_pct = 0.002
+
+
+# Probability-weighted expected direction
+direction_score = (
+    probs["bullish"]
+    - probs["bearish"]
+)
+
+expected_move_pct = (
+    direction_score * atr_pct
+)
+
+
+estimated_close = (
+    current_close
+    * (1 + expected_move_pct)
+)
+
+
+# Expected candle range
+range_pct = max(
+    atr_pct,
+    0.0005
+)
+
+estimated_high = (
+    current_close
+    * (1 + range_pct)
+)
+
+estimated_low = (
+    current_close
+    * (1 - range_pct)
+)
+
+
+# =========================================================
+# MAIN NEXT 15M PREDICTION
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "🎯 NEXT 15M CANDLE"
+)
+
+
+best_direction = max(
+    probs,
+    key=probs.get
+)
+
+confidence = probs[
+    best_direction
+]
+
+
+if ml_signal == "BULLISH":
+
+    st.success(
+        f"🟢 NEXT 15M: BULLISH — "
+        f"{confidence * 100:.1f}%"
+    )
+
+elif ml_signal == "BEARISH":
+
+    st.error(
+        f"🔴 NEXT 15M: BEARISH — "
+        f"{confidence * 100:.1f}%"
+    )
+
+else:
+
+    st.warning(
+        f"⚪ NEXT 15M: WAIT — "
+        f"highest confidence "
+        f"{confidence * 100:.1f}%"
+    )
+
+
+# =========================================================
+# TOP METRICS
+# =========================================================
+
+c1, c2, c3, c4 = st.columns(4)
+
+
+c1.metric(
+    "ML Confidence",
+    f"{confidence * 100:.1f}%"
+)
+
+
+c2.metric(
+    "🧭 4H Context",
+    f"{htf_icon} {htf_bias}"
+)
+
+
+c3.metric(
+    "🤖 Ensemble",
+    f"{metrics.get('ensemble_models', 3)} models"
+)
+
+
+c4.metric(
+    "🎯 Threshold",
+    f"{threshold * 100:.0f}%"
+)
+
+
+# =========================================================
+# NEXT CANDLE PRICE ESTIMATE
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "💰 NEXT 15M PRICE ESTIMATE"
+)
+
+st.caption(
+    "These are model-based estimates for the next candle, "
+    "not guaranteed prices."
+)
+
+
+q1, q2, q3, q4 = st.columns(4)
+
+
+with q1:
+
+    st.metric(
+        "Current / Expected Open",
+        f"{current_close:.8f}"
+    )
+
+
+with q2:
+
+    st.metric(
+        "Estimated Close",
+        f"{estimated_close:.8f}"
+    )
+
+
+with q3:
+
+    st.metric(
+        "Estimated High",
+        f"{estimated_high:.8f}"
+    )
+
+
+with q4:
+
+    st.metric(
+        "Estimated Low",
+        f"{estimated_low:.8f}"
+    )
+
+
+# =========================================================
+# EXPECTED MOVE
+# =========================================================
+
+if estimated_close > current_close:
+
+    move_icon = "🟢"
+
+elif estimated_close < current_close:
+
+    move_icon = "🔴"
+
+else:
+
+    move_icon = "⚪"
+
+
+st.info(
+    f"{move_icon} Estimated NEXT 15M move: "
+    f"**{expected_move_pct * 100:.3f}%**"
+)
+
+
+# =========================================================
+# PROBABILITY BREAKDOWN
+# =========================================================
+
+st.subheader(
+    "🤖 V6 Probability Breakdown"
+)
+
+
+p1, p2, p3 = st.columns(3)
+
+
+with p1:
+
+    st.metric(
+        "🟢 Bullish",
+        f"{probs['bullish'] * 100:.2f}%"
+    )
+
+
+with p2:
+
+    st.metric(
+        "⚪ Neutral",
+        f"{probs['neutral'] * 100:.2f}%"
+    )
+
+
+with p3:
+
+    st.metric(
+        "🔴 Bearish",
+        f"{probs['bearish'] * 100:.2f}%"
+    )
+
+
+# =========================================================
+# V6 ENGINE
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "🧠 V6 Prediction Engine"
+)
+
+st.write(
+    "V6 is focused specifically on predicting the "
+    "direction of the NEXT 15-minute candle."
+)
+
+st.write(
+    "It combines multiple machine-learning models "
+    "and averages their probabilities."
+)
+
+st.write(
+    "The 4H timeframe is used only as higher-timeframe "
+    "context inside the prediction model."
+)
+
+st.write(
+    "V6 also estimates the next candle's likely close "
+    "and price range using the current price and recent "
+    "volatility."
+)
+
+
+# =========================================================
+# PREDICTION STATUS
+# =========================================================
+
+if ml_signal == "BULLISH":
+
+    st.success(
+        f"🎯 V6 prediction: "
+        f"NEXT 15M candle is most likely **BULLISH** "
+        f"with {confidence * 100:.1f}% model confidence."
+    )
+
+elif ml_signal == "BEARISH":
+
+    st.error(
+        f"🎯 V6 prediction: "
+        f"NEXT 15M candle is most likely **BEARISH** "
+        f"with {confidence * 100:.1f}% model confidence."
+    )
+
+else:
+
+    st.warning(
+        f"🎯 V6 prediction: **WAIT**. "
+        f"The highest model probability is only "
+        f"{confidence * 100:.1f}%."
+    )
+
+
+# =========================================================
+# 4H CONTEXT
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    "🧭 4H Context Used By The Model"
+)
+
+htf_gap = latest.get(
+    "htf_ema_gap20",
+    np.nan
+)
+
+if pd.notna(htf_gap):
+
+    st.write(
+        f"4H EMA20 distance: "
+        f"**{htf_gap * 100:.2f}%**"
+    )
+
+st.write(
+    f"4H bias score: **{htf_score:.0f}**"
+)
+
+st.caption(
+    "4H data is context for the NEXT 15M prediction. "
+    "This app is not a separate market-analysis system."
+)
+
+
+# =========================================================
+# MODEL VALIDATION
+# =========================================================
+
+st.divider()
+
+left, right = st.columns(2)
+
+
+with left:
+
+    st.subheader(
+        "🧪 Chronological Validation"
+    )
+
+    st.write(
+        f"Holdout accuracy: "
+        f"**{metrics['holdout_accuracy'] * 100:.2f}%**"
+    )
+
+    st.write(
+        f"Training samples: "
+        f"**{metrics['train_samples']:,}**"
+    )
+
+    st.write(
+        f"Holdout samples: "
+        f"**{metrics['holdout_samples']:,}**"
+    )
+
+    st.caption(
+        "No random shuffle. Training data always comes "
+        "before validation data."
+    )
+
+
+with right:
+
+    st.subheader(
+        "🔄 Walk-Forward Backtest"
+    )
+
+    st.write(
+        f"Predictions: "
+        f"**{bt['predictions']:,}**"
+    )
+
+    st.write(
+        f"Overall accuracy: "
+        f"**{bt['accuracy'] * 100:.2f}%**"
+    )
+
+    st.write(
+        f"High-confidence signals: "
+        f"**{bt['signals']:,}**"
+    )
+
+    st.write(
+        f"Signal accuracy: "
+        f"**{bt['signal_accuracy'] * 100:.2f}%**"
+    )
+
+
+# =========================================================
+# DIRECTION BACKTEST
+# =========================================================
+
+st.subheader(
+    "📊 Direction Backtest"
+)
+
+
+b1, b2, b3 = st.columns(3)
+
+
+with b1:
+
+    st.metric(
+        "🟢 Bullish",
+        bt["bullish_signals"]
+    )
+
+    st.write(
+        f"Accuracy: "
+        f"**{bt['bullish_accuracy'] * 100:.2f}%**"
+    )
+
+
+with b2:
+
+    st.metric(
+        "🔴 Bearish",
+        bt["bearish_signals"]
+    )
+
+    st.write(
+        f"Accuracy: "
+        f"**{bt['bearish_accuracy'] * 100:.2f}%**"
+    )
+
+
+with b3:
+
+    st.metric(
+        "⚪ Neutral",
+        bt["neutral_signals"]
+    )
+
+    st.write(
+        f"Accuracy: "
+        f"**{bt['neutral_accuracy'] * 100:.2f}%**"
+    )
+
+
+# =========================================================
+# RECENT CANDLES
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    f"🕯️ Recent {symbol} 15M Candles"
+)
+
+
+display_columns = [
     "timestamp",
     "open",
     "high",
     "low",
     "close",
-    "volume",
-    "turnover",
-    "target",
-    "future_return",
-    "future_close",
-}
+    "volume"
+]
 
 
-def feature_columns(df):
+available_columns = [
+    c
+    for c in display_columns
+    if c in df.columns
+]
 
-    return [
-        c
-        for c in df.columns
-        if c not in EXCLUDE
-        and pd.api.types.is_numeric_dtype(df[c])
-    ]
 
+st.dataframe(
+    df[available_columns].tail(20),
+    use_container_width=True
+)
 
-def _classifier():
 
-    return HistGradientBoostingClassifier(
-        max_iter=250,
-        learning_rate=0.04,
-        max_leaf_nodes=15,
-        min_samples_leaf=25,
-        l2_regularization=1.5,
-        random_state=42
-    )
+# =========================================================
+# DISCLAIMER
+# =========================================================
 
-
-def _regressor():
-
-    return HistGradientBoostingRegressor(
-        max_iter=250,
-        learning_rate=0.04,
-        max_leaf_nodes=15,
-        min_samples_leaf=25,
-        l2_regularization=1.5,
-        random_state=42
-    )
-
-
-def train_model(df):
-
-    cols = feature_columns(df)
-
-    if not cols:
-        raise ValueError(
-            "No usable model features were found."
-        )
-
-    data = df.copy()
-
-    # Next-candle return target
-    data["future_return"] = (
-        data["close"].shift(-1)
-        / data["close"]
-        - 1
-    )
-
-    data["future_close"] = (
-        data["close"].shift(-1)
-    )
-
-    data = data.dropna(
-        subset=cols + [
-            "target",
-            "future_return",
-            "future_close"
-        ]
-    ).copy()
-
-    if len(data) < 500:
-        raise ValueError(
-            "Not enough clean historical candles."
-        )
-
-    X = data[cols]
-
-    # Direction target
-    y_direction = (
-        data["target"]
-        .map({
-            -1: 0,
-            0: 1,
-            1: 2
-        })
-        .astype(int)
-    )
-
-    # Regression target = next candle return
-    y_return = data["future_return"]
-
-    split = int(len(data) * 0.80)
-
-    X_train = X.iloc[:split]
-    X_test = X.iloc[split:]
-
-    y_train = y_direction.iloc[:split]
-    y_test = y_direction.iloc[split:]
-
-    r_train = y_return.iloc[:split]
-    r_test = y_return.iloc[split:]
-
-    # =====================================================
-    # THREE CLASSIFICATION MODELS
-    # =====================================================
-
-    classifiers = [
-        _classifier(),
-        HistGradientBoostingClassifier(
-            max_iter=300,
-            learning_rate=0.03,
-            max_leaf_nodes=12,
-            min_samples_leaf=30,
-            l2_regularization=2.0,
-            random_state=123
-        ),
-        HistGradientBoostingClassifier(
-            max_iter=200,
-            learning_rate=0.05,
-            max_leaf_nodes=10,
-            min_samples_leaf=20,
-            l2_regularization=1.0,
-            random_state=321
-        )
-    ]
-
-    for model in classifiers:
-        model.fit(
-            X_train,
-            y_train
-        )
-
-    test_probabilities = []
-
-    for model in classifiers:
-
-        test_probabilities.append(
-            model.predict_proba(
-                X_test
-            )
-        )
-
-    avg_probabilities = np.mean(
-        test_probabilities,
-        axis=0
-    )
-
-    pred = np.argmax(
-        avg_probabilities,
-        axis=1
-    )
-
-    # =====================================================
-    # NEXT-CLOSE REGRESSION MODEL
-    # =====================================================
-
-    regressor = _regressor()
-
-    regressor.fit(
-        X_train,
-        r_train
-    )
-
-    predicted_return = regressor.predict(
-        X_test
-    )
-
-    metrics = {
-        "holdout_accuracy": float(
-            accuracy_score(
-                y_test,
-                pred
-            )
-        ),
-        "train_samples": int(
-            len(X_train)
-        ),
-        "holdout_samples": int(
-            len(X_test)
-        ),
-        "ensemble_models": 3,
-        "close_mae_pct": float(
-            mean_absolute_error(
-                r_test,
-                predicted_return
-            ) * 100
-        )
-    }
-
-    return (
-        {
-            "classifiers": classifiers,
-            "regressor": regressor
-        },
-        cols,
-        metrics
-    )
-
-
-def predict_next(
-    models,
-    df,
-    cols,
-    threshold=0.65
-):
-
-    latest = df[cols].iloc[[-1]]
-
-    if latest.isnull().any().any():
-        raise ValueError(
-            "Latest candle contains missing features."
-        )
-
-    # =====================================================
-    # ENSEMBLE DIRECTION
-    # =====================================================
-
-    probabilities = []
-
-    for model in models["classifiers"]:
-
-        probabilities.append(
-            model.predict_proba(
-                latest
-            )[0]
-        )
-
-    avg_probability = np.mean(
-        probabilities,
-        axis=0
-    )
-
-    mapping = {
-        int(k): float(v)
-        for k, v in zip(
-            models["classifiers"][0].classes_,
-            avg_probability
-        )
-    }
-
-    probs = {
-        "bearish": mapping.get(0, 0.0),
-        "neutral": mapping.get(1, 0.0),
-        "bullish": mapping.get(2, 0.0)
-    }
-
-    best = max(
-        probs,
-        key=probs.get
-    )
-
-    confidence = probs[best]
-
-    # =====================================================
-    # MODEL AGREEMENT
-    # =====================================================
-
-    individual_predictions = []
-
-    for model in models["classifiers"]:
-
-        p = model.predict_proba(
-            latest
-        )[0]
-
-        individual_predictions.append(
-            int(
-                np.argmax(p)
-            )
-        )
-
-    agreement_count = (
-        individual_predictions.count(
-            int(
-                {"bearish": 0,
-                 "neutral": 1,
-                 "bullish": 2}[best]
-            )
-        )
-    )
-
-    # Require confidence AND majority agreement
-    if (
-        confidence >= threshold
-        and agreement_count >= 2
-    ):
-
-        signal = best.upper()
-
-    else:
-
-        signal = "NO EDGE"
-
-    # =====================================================
-    # EXPECTED NEXT CANDLE CLOSE
-    # =====================================================
-
-    predicted_return = float(
-        models["regressor"].predict(
-            latest
-        )[0]
-    )
-
-    current_close = float(
-        df["close"].iloc[-1]
-    )
-
-    expected_open = current_close
-
-    predicted_close = (
-        current_close
-        * (1 + predicted_return)
-    )
-
-    expected_move_pct = (
-        predicted_return * 100
-    )
-
-    return (
-        probs,
-        signal,
-        expected_open,
-        predicted_close,
-        expected_move_pct
-    )
-
-
-def walk_forward_backtest(
-    df,
-    cols,
-    min_train=1000,
-    step=50,
-    signal_threshold=0.65
-):
-
-    data = df.copy()
-
-    data["future_return"] = (
-        data["close"].shift(-1)
-        / data["close"]
-        - 1
-    )
-
-    data = data.dropna(
-        subset=cols + [
-            "target",
-            "future_return"
-        ]
-    ).copy()
-
-    if len(data) <= min_train + step:
-
-        return {
-            "predictions": 0,
-            "accuracy": 0.0,
-            "signals": 0,
-            "signal_accuracy": 0.0,
-            "bullish_signals": 0,
-            "bullish_accuracy": 0.0,
-            "bearish_signals": 0,
-            "bearish_accuracy": 0.0,
-            "neutral_signals": 0,
-            "neutral_accuracy": 0.0
-        }
-
-    preds = []
-    actuals = []
-
-    signal_preds = []
-
-    bullish = []
-    bearish = []
-    neutral = []
-
-    for i in range(
-        min_train,
-        len(data) - 1,
-        step
-    ):
-
-        train = data.iloc[:i]
-
-        test = data.iloc[
-            i:min(
-                i + step,
-                len(data) - 1
-            )
-        ]
-
-        if len(test) == 0:
-            continue
-
-        ytrain = (
-            train["target"]
-            .map({
-                -1: 0,
-                0: 1,
-                1: 2
-            })
-            .astype(int)
-        )
-
-        if ytrain.nunique() < 2:
-            continue
-
-        models = [
-            _classifier(),
-            HistGradientBoostingClassifier(
-                max_iter=300,
-                learning_rate=0.03,
-                max_leaf_nodes=12,
-                min_samples_leaf=30,
-                l2_regularization=2.0,
-                random_state=123
-            ),
-            HistGradientBoostingClassifier(
-                max_iter=200,
-                learning_rate=0.05,
-                max_leaf_nodes=10,
-                min_samples_leaf=20,
-                l2_regularization=1.0,
-                random_state=321
-            )
-        ]
-
-        probabilities = []
-
-        for model in models:
-
-            model.fit(
-                train[cols],
-                ytrain
-            )
-
-            probabilities.append(
-                model.predict_proba(
-                    test[cols]
-                )
-            )
-
-        avg_p = np.mean(
-            probabilities,
-            axis=0
-        )
-
-        pred = np.argmax(
-            avg_p,
-            axis=1
-        )
-
-        actual = (
-            test["target"]
-            .map({
-                -1: 0,
-                0: 1,
-                1: 2
-            })
-            .astype(int)
-            .tolist()
-        )
-
-        preds.extend(
-            pred.tolist()
-        )
-
-        actuals.extend(
-            actual
-        )
-
-        confidence = avg_p.max(
-            axis=1
-        )
-
-        for pp, yy, cc in zip(
-            pred,
-            actual,
-            confidence
-        ):
-
-            pp = int(pp)
-            yy = int(yy)
-            cc = float(cc)
-
-            if cc >= signal_threshold:
-
-                signal_preds.append(
-                    (pp, yy)
-                )
-
-                if pp == 2:
-                    bullish.append(
-                        pp == yy
-                    )
-
-                elif pp == 0:
-                    bearish.append(
-                        pp == yy
-                    )
-
-                else:
-                    neutral.append(
-                        pp == yy
-                    )
-
-    accuracy = (
-        float(
-            np.mean(
-                np.array(preds)
-                == np.array(actuals)
-            )
-        )
-        if preds
-        else 0.0
-    )
-
-    signal_accuracy = (
-        float(
-            np.mean([
-                p == y
-                for p, y in signal_preds
-            ])
-        )
-        if signal_preds
-        else 0.0
-    )
-
-    return {
-        "predictions": len(preds),
-        "accuracy": accuracy,
-        "signals": len(signal_preds),
-        "signal_accuracy": signal_accuracy,
-
-        "bullish_signals": len(bullish),
-        "bullish_accuracy": (
-            float(np.mean(bullish))
-            if bullish else 0.0
-        ),
-
-        "bearish_signals": len(bearish),
-        "bearish_accuracy": (
-            float(np.mean(bearish))
-            if bearish else 0.0
-        ),
-
-        "neutral_signals": len(neutral),
-        "neutral_accuracy": (
-            float(np.mean(neutral))
-            if neutral else 0.0
-        )
-    }
+st.caption(
+    "V6 predicts only the NEXT 15-minute candle. "
+    "The displayed confidence and price estimates are "
+    "model estimates and cannot guarantee the future candle."
+)
