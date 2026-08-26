@@ -1,9 +1,17 @@
 import numpy as np
 import pandas as pd
 
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.ensemble import (
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+    ExtraTreesClassifier
+)
 from sklearn.metrics import accuracy_score
 
+
+# =========================================================
+# FEATURES TO EXCLUDE
+# =========================================================
 
 EXCLUDE = {
     "timestamp",
@@ -26,103 +34,93 @@ def feature_columns(df):
     ]
 
 
-def _make_model():
-    return HistGradientBoostingClassifier(
-        max_iter=250,
-        learning_rate=0.04,
-        max_leaf_nodes=15,
-        min_samples_leaf=25,
-        l2_regularization=1.5,
-        random_state=42
-    )
+# =========================================================
+# MODEL FACTORY
+# =========================================================
 
+def _make_models():
 
-def _encode_target(series):
-    return (
-        series
-        .map({
-            -1: 0,
-            0: 1,
-            1: 2
-        })
-        .astype(int)
-    )
+    models = [
 
+        HistGradientBoostingClassifier(
+            max_iter=250,
+            learning_rate=0.04,
+            max_leaf_nodes=15,
+            min_samples_leaf=25,
+            l2_regularization=1.5,
+            random_state=42
+        ),
 
-def _confidence_bucket(confidence):
-    if confidence < 0.55:
-        return "50-55%"
+        RandomForestClassifier(
+            n_estimators=250,
+            max_depth=8,
+            min_samples_leaf=8,
+            max_features="sqrt",
+            class_weight="balanced_subsample",
+            random_state=42,
+            n_jobs=-1
+        ),
 
-    if confidence < 0.60:
-        return "55-60%"
-
-    if confidence < 0.65:
-        return "60-65%"
-
-    if confidence < 0.70:
-        return "65-70%"
-
-    if confidence < 0.75:
-        return "70-75%"
-
-    if confidence < 0.80:
-        return "75-80%"
-
-    return "80%+"
-
-
-def _build_calibration_table(
-    confidence,
-    correct
-):
-
-    rows = []
-
-    buckets = [
-        (0.50, 0.55, "50-55%"),
-        (0.55, 0.60, "55-60%"),
-        (0.60, 0.65, "60-65%"),
-        (0.65, 0.70, "65-70%"),
-        (0.70, 0.75, "70-75%"),
-        (0.75, 0.80, "75-80%"),
-        (0.80, 1.01, "80%+"),
+        ExtraTreesClassifier(
+            n_estimators=250,
+            max_depth=10,
+            min_samples_leaf=6,
+            max_features="sqrt",
+            class_weight="balanced",
+            random_state=42,
+            n_jobs=-1
+        )
     ]
 
-    for low, high, label in buckets:
+    return models
 
-        mask = (
-            (confidence >= low)
-            & (confidence < high)
+
+# =========================================================
+# PROBABILITY ALIGNMENT
+# =========================================================
+
+def _aligned_probability(model, X):
+
+    probabilities = model.predict_proba(X)
+
+    result = np.zeros(
+        (len(X), 3),
+        dtype=float
+    )
+
+    for j, cls in enumerate(model.classes_):
+
+        result[:, int(cls)] = probabilities[:, j]
+
+    return result
+
+
+# =========================================================
+# ENSEMBLE PREDICTION
+# =========================================================
+
+def _ensemble_probability(models, X):
+
+    all_probs = []
+
+    for model in models:
+
+        all_probs.append(
+            _aligned_probability(
+                model,
+                X
+            )
         )
 
-        count = int(mask.sum())
+    return np.mean(
+        all_probs,
+        axis=0
+    )
 
-        if count:
 
-            actual_accuracy = float(
-                np.mean(correct[mask])
-            )
-
-            average_confidence = float(
-                np.mean(confidence[mask])
-            )
-
-        else:
-
-            actual_accuracy = 0.0
-            average_confidence = 0.0
-
-        rows.append({
-            "bucket": label,
-            "samples": count,
-            "average_confidence":
-                average_confidence,
-            "actual_accuracy":
-                actual_accuracy
-        })
-
-    return rows
-
+# =========================================================
+# TRAIN V5
+# =========================================================
 
 def train_model(df):
 
@@ -143,199 +141,81 @@ def train_model(df):
         )
 
     X = data[cols]
-    y = _encode_target(
-        data["target"]
-    )
 
-    # =====================================================
-    # CHRONOLOGICAL SPLIT
-    #
-    # 70% training
-    # 10% calibration
-    # 20% final holdout
-    #
-    # Nothing is randomly shuffled.
-    # =====================================================
+    y = data["target"].map({
+        -1: 0,
+        0: 1,
+        1: 2
+    }).astype(int)
 
-    train_end = int(
-        len(data) * 0.70
-    )
-
-    calibration_end = int(
+    split = int(
         len(data) * 0.80
     )
 
-    X_train = X.iloc[
-        :train_end
-    ]
+    X_train = X.iloc[:split]
+    X_test = X.iloc[split:]
 
-    y_train = y.iloc[
-        :train_end
-    ]
+    y_train = y.iloc[:split]
+    y_test = y.iloc[split:]
 
-    X_calibration = X.iloc[
-        train_end:calibration_end
-    ]
+    models = _make_models()
 
-    y_calibration = y.iloc[
-        train_end:calibration_end
-    ]
+    trained_models = []
 
-    X_test = X.iloc[
-        calibration_end:
-    ]
+    for model in models:
 
-    y_test = y.iloc[
-        calibration_end:
-    ]
-
-    # =====================================================
-    # TRAIN INITIAL MODEL
-    # =====================================================
-
-    calibration_model = _make_model()
-
-    calibration_model.fit(
-        X_train,
-        y_train
-    )
-
-    # =====================================================
-    # CALIBRATION DATA
-    #
-    # These candles were NOT used for training.
-    # =====================================================
-
-    calibration_probs = (
-        calibration_model
-        .predict_proba(
-            X_calibration
+        model.fit(
+            X_train,
+            y_train
         )
-    )
 
-    calibration_pred = (
-        calibration_model
-        .predict(
-            X_calibration
-        )
-    )
+        trained_models.append(model)
 
-    calibration_confidence = (
-        calibration_probs.max(
-            axis=1
-        )
-    )
-
-    calibration_correct = (
-        calibration_pred
-        == y_calibration.to_numpy()
-    )
-
-    calibration_table = (
-        _build_calibration_table(
-            calibration_confidence,
-            calibration_correct
-        )
-    )
-
-    # =====================================================
-    # FINAL HOLDOUT
-    # =====================================================
-
-    final_model = _make_model()
-
-    # Train on the first 80%.
-    X_final_train = X.iloc[
-        :calibration_end
-    ]
-
-    y_final_train = y.iloc[
-        :calibration_end
-    ]
-
-    final_model.fit(
-        X_final_train,
-        y_final_train
-    )
-
-    final_pred = final_model.predict(
+    probabilities = _ensemble_probability(
+        trained_models,
         X_test
     )
 
-    final_probs = (
-        final_model
-        .predict_proba(
-            X_test
-        )
+    predictions = np.argmax(
+        probabilities,
+        axis=1
     )
-
-    holdout_accuracy = accuracy_score(
-        y_test,
-        final_pred
-    )
-
-    # =====================================================
-    # CALIBRATION SUMMARY
-    # =====================================================
-
-    calibration_gap = []
-
-    for row in calibration_table:
-
-        if row["samples"] >= 10:
-
-            calibration_gap.append(
-                abs(
-                    row["average_confidence"]
-                    - row["actual_accuracy"]
-                )
-            )
-
-    if calibration_gap:
-
-        average_calibration_error = float(
-            np.mean(calibration_gap)
-        )
-
-    else:
-
-        average_calibration_error = 0.0
 
     metrics = {
 
-        "holdout_accuracy":
-            float(holdout_accuracy),
+        "holdout_accuracy": float(
+            accuracy_score(
+                y_test,
+                predictions
+            )
+        ),
 
-        "holdout_samples":
-            int(len(y_test)),
+        "holdout_samples": int(
+            len(y_test)
+        ),
 
-        "train_samples":
-            int(len(y_final_train)),
+        "train_samples": int(
+            len(y_train)
+        ),
 
-        "calibration_samples":
-            int(len(y_calibration)),
-
-        "calibration_table":
-            calibration_table,
-
-        "average_calibration_error":
-            average_calibration_error
+        "ensemble_models": int(
+            len(trained_models)
+        )
     }
 
-    # Attach calibration information to model.
-    final_model.calibration_table = (
-        calibration_table
-    )
-
     return (
-        final_model,
+        trained_models,
         cols,
         metrics
     )
 
 
+# =========================================================
+# NEXT 15-MINUTE PREDICTION
+# =========================================================
+
 def predict_next(
-    model,
+    models,
     df,
     cols,
     threshold=0.65
@@ -349,90 +229,95 @@ def predict_next(
             "Latest candle contains missing features."
         )
 
-    p = model.predict_proba(
+    probabilities = _ensemble_probability(
+        models,
         latest
     )[0]
 
-    mapping = {
-        int(k): float(v)
-        for k, v in zip(
-            model.classes_,
-            p
-        )
-    }
-
     probs = {
-        "bearish":
-            mapping.get(0, 0.0),
 
-        "neutral":
-            mapping.get(1, 0.0),
+        "bearish": float(
+            probabilities[0]
+        ),
 
-        "bullish":
-            mapping.get(2, 0.0)
+        "neutral": float(
+            probabilities[1]
+        ),
+
+        "bullish": float(
+            probabilities[2]
+        )
     }
 
-    best = max(
-        probs,
-        key=probs.get
+    best_index = int(
+        np.argmax(probabilities)
     )
 
-    raw_confidence = probs[best]
+    names = [
+        "BEARISH",
+        "NEUTRAL",
+        "BULLISH"
+    ]
 
-    # =====================================================
-    # HISTORICAL CALIBRATED CONFIDENCE
-    # =====================================================
+    best = names[best_index]
 
-    calibrated_confidence = (
-        raw_confidence
+    confidence = float(
+        probabilities[best_index]
     )
 
-    calibration_bucket = (
-        _confidence_bucket(
-            raw_confidence
+    # -----------------------------------------------------
+    # MODEL AGREEMENT
+    # -----------------------------------------------------
+
+    individual_predictions = []
+
+    for model in models:
+
+        p = _aligned_probability(
+            model,
+            latest
+        )[0]
+
+        individual_predictions.append(
+            int(np.argmax(p))
         )
+
+    agreement = (
+        sum(
+            p == best_index
+            for p in individual_predictions
+        )
+        / len(individual_predictions)
     )
 
-    if hasattr(
-        model,
-        "calibration_table"
+    # -----------------------------------------------------
+    # FINAL SIGNAL
+    # -----------------------------------------------------
+
+    # Require both sufficient probability
+    # and model agreement.
+
+    if (
+        confidence >= threshold
+        and agreement >= 2 / 3
+        and best != "NEUTRAL"
     ):
 
-        for row in (
-            model.calibration_table
-        ):
+        signal = best
 
-            if (
-                row["bucket"]
-                == calibration_bucket
-                and row["samples"] >= 10
-            ):
+    else:
 
-                calibrated_confidence = (
-                    row["actual_accuracy"]
-                )
-
-                break
-
-    # =====================================================
-    # SIGNAL
-    #
-    # Use raw ML probability for the initial threshold.
-    # Calibration is displayed separately so we don't
-    # pretend the calibrated number is a guarantee.
-    # =====================================================
-
-    signal = (
-        best.upper()
-        if raw_confidence >= threshold
-        else "NO EDGE"
-    )
+        signal = "NO EDGE"
 
     return (
         probs,
         signal
     )
 
+
+# =========================================================
+# WALK-FORWARD BACKTEST
+# =========================================================
 
 def walk_forward_backtest(
     df,
@@ -449,8 +334,10 @@ def walk_forward_backtest(
     if len(data) <= min_train + step:
 
         return {
+
             "predictions": 0,
             "accuracy": 0.0,
+
             "signals": 0,
             "signal_accuracy": 0.0,
 
@@ -461,9 +348,7 @@ def walk_forward_backtest(
             "bearish_accuracy": 0.0,
 
             "neutral_signals": 0,
-            "neutral_accuracy": 0.0,
-
-            "calibration_table": []
+            "neutral_accuracy": 0.0
         }
 
     preds = []
@@ -474,9 +359,6 @@ def walk_forward_backtest(
     bullish = []
     bearish = []
     neutral = []
-
-    confidence_history = []
-    correctness_history = []
 
     for i in range(
         min_train,
@@ -496,95 +378,107 @@ def walk_forward_backtest(
         if len(test) == 0:
             continue
 
-        ytrain = _encode_target(
-            train["target"]
-        )
+        ytrain = train["target"].map({
+            -1: 0,
+            0: 1,
+            1: 2
+        }).astype(int)
 
         if ytrain.nunique() < 2:
             continue
 
-        model = _make_model()
+        models = _make_models()
 
-        model.fit(
-            train[cols],
-            ytrain
-        )
+        trained_models = []
 
-        p = model.predict_proba(
+        for model in models:
+
+            model.fit(
+                train[cols],
+                ytrain
+            )
+
+            trained_models.append(model)
+
+        probabilities = _ensemble_probability(
+            trained_models,
             test[cols]
         )
 
-        pred = model.predict(
-            test[cols]
+        predictions = np.argmax(
+            probabilities,
+            axis=1
         )
 
         actual = (
-            _encode_target(
-                test["target"]
-            )
+            test["target"]
+            .map({
+                -1: 0,
+                0: 1,
+                1: 2
+            })
+            .astype(int)
             .tolist()
         )
 
         preds.extend(
-            pred.tolist()
+            predictions.tolist()
         )
 
         actuals.extend(
             actual
         )
 
-        confidence = p.max(
+        confidence = probabilities.max(
             axis=1
         )
 
-        for pp, yy, cc in zip(
-            pred,
-            actual,
-            confidence
+        # -------------------------------------------------
+        # SIGNALS
+        # -------------------------------------------------
+
+        for j in range(
+            len(predictions)
         ):
 
-            pp = int(pp)
-            yy = int(yy)
-            cc = float(cc)
-
-            is_correct = (
-                pp == yy
+            prediction = int(
+                predictions[j]
             )
 
-            confidence_history.append(
-                cc
+            real = int(
+                actual[j]
             )
 
-            correctness_history.append(
-                is_correct
+            conf = float(
+                confidence[j]
             )
 
-            if cc >= signal_threshold:
+            if conf >= signal_threshold:
 
                 signal_preds.append(
-                    (pp, yy)
+                    (prediction, real)
                 )
 
-                if pp == 2:
+                if prediction == 2:
 
                     bullish.append(
-                        is_correct
+                        prediction == real
                     )
 
-                elif pp == 0:
+                elif prediction == 0:
 
                     bearish.append(
-                        is_correct
+                        prediction == real
                     )
 
-                elif pp == 1:
+                else:
 
                     neutral.append(
-                        is_correct
+                        prediction == real
                     )
 
     # =====================================================
-    # OVERALL ACCURACY
+    # ACCURACY
     # =====================================================
 
     if preds:
@@ -601,7 +495,7 @@ def walk_forward_backtest(
         accuracy = 0.0
 
     # =====================================================
-    # HIGH-CONFIDENCE ACCURACY
+    # SIGNAL ACCURACY
     # =====================================================
 
     if signal_preds:
@@ -617,6 +511,10 @@ def walk_forward_backtest(
     else:
 
         signal_accuracy = 0.0
+
+    # =====================================================
+    # DIRECTION ACCURACY
+    # =====================================================
 
     bullish_accuracy = (
         float(np.mean(bullish))
@@ -636,88 +534,38 @@ def walk_forward_backtest(
         else 0.0
     )
 
-    # =====================================================
-    # WALK-FORWARD CALIBRATION
-    #
-    # This is especially important because these
-    # predictions were generated strictly forward in time.
-    # =====================================================
-
-    confidence_array = np.array(
-        confidence_history
-    )
-
-    correctness_array = np.array(
-        correctness_history
-    )
-
-    calibration_table = (
-        _build_calibration_table(
-            confidence_array,
-            correctness_array
-        )
-        if len(confidence_array)
-        else []
-    )
-
-    calibration_errors = []
-
-    for row in calibration_table:
-
-        if row["samples"] >= 10:
-
-            calibration_errors.append(
-                abs(
-                    row["average_confidence"]
-                    - row["actual_accuracy"]
-                )
-            )
-
-    walk_forward_calibration_error = (
-        float(
-            np.mean(
-                calibration_errors
-            )
-        )
-        if calibration_errors
-        else 0.0
-    )
-
     return {
 
-        "predictions":
-            int(len(preds)),
+        "predictions": int(
+            len(preds)
+        ),
 
-        "accuracy":
-            accuracy,
+        "accuracy": accuracy,
 
-        "signals":
-            int(len(signal_preds)),
+        "signals": int(
+            len(signal_preds)
+        ),
 
-        "signal_accuracy":
-            signal_accuracy,
+        "signal_accuracy": signal_accuracy,
 
-        "bullish_signals":
-            int(len(bullish)),
+        "bullish_signals": int(
+            len(bullish)
+        ),
 
         "bullish_accuracy":
             bullish_accuracy,
 
-        "bearish_signals":
-            int(len(bearish)),
+        "bearish_signals": int(
+            len(bearish)
+        ),
 
         "bearish_accuracy":
             bearish_accuracy,
 
-        "neutral_signals":
-            int(len(neutral)),
+        "neutral_signals": int(
+            len(neutral)
+        ),
 
         "neutral_accuracy":
-            neutral_accuracy,
-
-        "calibration_table":
-            calibration_table,
-
-        "calibration_error":
-            walk_forward_calibration_error
+            neutral_accuracy
     }
