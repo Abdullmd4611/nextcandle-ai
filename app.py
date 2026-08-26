@@ -65,21 +65,21 @@ with st.sidebar:
         "Minimum confidence",
         0.50,
         0.90,
-        0.60,
+        0.65,
         0.01
     )
 
     test_count = st.slider(
         "Historical prediction tests",
-        20,
-        100,
         80,
-        step=10
+        80,
+        80
     )
 
     run = st.button(
         "🚀 RUN V7 TEST",
-        type="primary"
+        type="primary",
+        use_container_width=True
     )
 
 
@@ -96,7 +96,7 @@ if run or "result" not in st.session_state:
         # =================================================
 
         with st.spinner(
-            "📥 Downloading 15M candles..."
+            f"📥 Downloading {symbol} 15M candles..."
         ):
 
             raw_15m = fetch_klines(
@@ -134,7 +134,7 @@ if run or "result" not in st.session_state:
 
 
         # =================================================
-        # STEP 3 — FEATURES
+        # STEP 3 — BUILD FEATURES
         # =================================================
 
         with st.spinner(
@@ -147,7 +147,7 @@ if run or "result" not in st.session_state:
             )
 
 
-        if df is None or len(df) < 700:
+        if df is None or len(df) < 1100:
 
             raise ValueError(
                 f"Not enough clean candles. "
@@ -156,7 +156,7 @@ if run or "result" not in st.session_state:
 
 
         # =================================================
-        # STEP 4 — TRAIN
+        # STEP 4 — TRAIN LIVE V7
         # =================================================
 
         with st.spinner(
@@ -169,7 +169,7 @@ if run or "result" not in st.session_state:
 
 
         # =================================================
-        # STEP 5 — LIVE NEXT CANDLE PREDICTION
+        # STEP 5 — LIVE NEXT 15M PREDICTION
         # =================================================
 
         with st.spinner(
@@ -191,22 +191,24 @@ if run or "result" not in st.session_state:
 
 
         # =================================================
-        # STEP 6 — STANDARD BACKTEST
+        # STEP 6 — EXACT 80-CANDLE WALK-FORWARD TEST
         # =================================================
 
         with st.spinner(
-            "🔄 Running chronological backtest..."
+            "🧪 Running the 80 historical candle reality test..."
         ):
 
             bt = walk_forward_backtest(
                 df,
                 feature_cols,
+                n_tests=80,
+                min_train=1000,
                 signal_threshold=threshold
             )
 
 
         # =================================================
-        # SAVE
+        # SAVE RESULT
         # =================================================
 
         st.session_state.result = (
@@ -241,7 +243,7 @@ if run or "result" not in st.session_state:
 if "result" not in st.session_state:
 
     st.warning(
-        "Click RUN V7 TEST."
+        "Click 🚀 RUN V7 TEST."
     )
 
     st.stop()
@@ -472,7 +474,7 @@ with v1:
 with v2:
 
     st.metric(
-        "Backtest Accuracy",
+        "80-Test Accuracy",
         f"{bt.get('accuracy', 0) * 100:.2f}%"
     )
 
@@ -480,7 +482,7 @@ with v2:
 with v3:
 
     st.metric(
-        "High Confidence",
+        "High-Confidence Accuracy",
         f"{bt.get('signal_accuracy', 0) * 100:.2f}%"
     )
 
@@ -488,14 +490,188 @@ with v3:
 with v4:
 
     st.metric(
-        "Test Predictions",
+        "Tests Completed",
         f"{bt.get('predictions', 0):,}"
     )
 
 
 # =========================================================
-# BULLISH / BEARISH BACKTEST
+# 80-TEST SCORE
 # =========================================================
+
+st.divider()
+
+st.header(
+    "🎯 THE 80-CANDLE REALITY TEST"
+)
+
+total_tests = int(
+    bt.get(
+        "predictions",
+        0
+    )
+)
+
+overall_accuracy = float(
+    bt.get(
+        "accuracy",
+        0
+    )
+)
+
+correct_tests = int(
+    round(
+        total_tests
+        * overall_accuracy
+    )
+)
+
+wrong_tests = (
+    total_tests
+    - correct_tests
+)
+
+
+r1, r2, r3, r4 = st.columns(4)
+
+
+with r1:
+
+    st.metric(
+        "🧪 Tests",
+        total_tests
+    )
+
+
+with r2:
+
+    st.metric(
+        "✅ Correct",
+        correct_tests
+    )
+
+
+with r3:
+
+    st.metric(
+        "❌ Wrong",
+        wrong_tests
+    )
+
+
+with r4:
+
+    st.metric(
+        "🎯 Accuracy",
+        f"{overall_accuracy * 100:.2f}%"
+    )
+
+
+# =========================================================
+# PASS / FAIL
+# =========================================================
+
+if total_tests >= 80:
+
+    if correct_tests >= 70:
+
+        st.success(
+            f"🔥 V7 PASSES the 80-candle test: "
+            f"{correct_tests}/80 correct "
+            f"({overall_accuracy * 100:.2f}%)."
+        )
+
+    elif correct_tests >= 64:
+
+        st.warning(
+            f"⚠️ V7 is promising but not strong enough yet: "
+            f"{correct_tests}/80 correct "
+            f"({overall_accuracy * 100:.2f}%)."
+        )
+
+    else:
+
+        st.error(
+            f"❌ V7 FAILS the current target: "
+            f"{correct_tests}/80 correct "
+            f"({overall_accuracy * 100:.2f}%)."
+        )
+
+else:
+
+    st.warning(
+        f"Only {total_tests} tests completed. "
+        "We need all 80 tests before judging V7."
+    )
+
+
+# =========================================================
+# HIGH-CONFIDENCE SIGNAL TEST
+# =========================================================
+
+st.subheader(
+    "🔥 HIGH-CONFIDENCE SIGNAL TEST"
+)
+
+signals = int(
+    bt.get(
+        "signals",
+        0
+    )
+)
+
+signal_accuracy = float(
+    bt.get(
+        "signal_accuracy",
+        0
+    )
+)
+
+s1, s2, s3 = st.columns(3)
+
+
+with s1:
+
+    st.metric(
+        "High-Confidence Signals",
+        signals
+    )
+
+
+with s2:
+
+    st.metric(
+        "Signal Accuracy",
+        f"{signal_accuracy * 100:.2f}%"
+    )
+
+
+with s3:
+
+    if signals > 0:
+
+        signal_correct = int(
+            round(
+                signals
+                * signal_accuracy
+            )
+        )
+
+    else:
+
+        signal_correct = 0
+
+    st.metric(
+        "Correct Signals",
+        signal_correct
+    )
+
+
+# =========================================================
+# DIRECTION PERFORMANCE
+# =========================================================
+
+st.divider()
 
 st.subheader(
     "📊 Direction Performance"
@@ -506,76 +682,246 @@ b1, b2, b3 = st.columns(3)
 
 with b1:
 
-    st.metric(
-        "🟢 Bullish Tests",
+    bullish_count = int(
         bt.get(
             "bullish_signals",
             0
         )
     )
 
+    bullish_accuracy = float(
+        bt.get(
+            "bullish_accuracy",
+            0
+        )
+    )
+
+    st.metric(
+        "🟢 Bullish Tests",
+        bullish_count
+    )
+
     st.write(
-        "Accuracy: "
-        f"**{bt.get('bullish_accuracy', 0) * 100:.2f}%**"
+        f"Accuracy: "
+        f"**{bullish_accuracy * 100:.2f}%**"
     )
 
 
 with b2:
 
-    st.metric(
-        "🔴 Bearish Tests",
+    bearish_count = int(
         bt.get(
             "bearish_signals",
             0
         )
     )
 
+    bearish_accuracy = float(
+        bt.get(
+            "bearish_accuracy",
+            0
+        )
+    )
+
+    st.metric(
+        "🔴 Bearish Tests",
+        bearish_count
+    )
+
     st.write(
-        "Accuracy: "
-        f"**{bt.get('bearish_accuracy', 0) * 100:.2f}%**"
+        f"Accuracy: "
+        f"**{bearish_accuracy * 100:.2f}%**"
     )
 
 
 with b3:
 
-    st.metric(
-        "⚪ Neutral Tests",
+    neutral_count = int(
         bt.get(
             "neutral_signals",
             0
         )
     )
 
+    neutral_accuracy = float(
+        bt.get(
+            "neutral_accuracy",
+            0
+        )
+    )
+
+    st.metric(
+        "⚪ Neutral Tests",
+        neutral_count
+    )
+
     st.write(
-        "Accuracy: "
-        f"**{bt.get('neutral_accuracy', 0) * 100:.2f}%**"
+        f"Accuracy: "
+        f"**{neutral_accuracy * 100:.2f}%**"
     )
 
 
 # =========================================================
-# 80-TEST EXPLANATION
+# INDIVIDUAL 80 TESTS
 # =========================================================
 
 st.divider()
 
 st.header(
-    "🎯 THE TEST WE ACTUALLY CARE ABOUT"
+    "🧾 INDIVIDUAL 80-CANDLE RESULTS"
+)
+
+test_results = bt.get(
+    "test_results",
+    []
+)
+
+
+if test_results:
+
+    results_df = pd.DataFrame(
+        test_results
+    )
+
+    # -----------------------------------------------------
+    # Friendly display columns
+    # -----------------------------------------------------
+
+    display_results = results_df.copy()
+
+    if "timestamp" in display_results.columns:
+
+        display_results["timestamp"] = (
+            pd.to_datetime(
+                display_results["timestamp"],
+                utc=True,
+                errors="coerce"
+            )
+            .dt.strftime(
+                "%Y-%m-%d %H:%M UTC"
+            )
+        )
+
+    if "confidence" in display_results.columns:
+
+        display_results["confidence"] = (
+            display_results["confidence"]
+            * 100
+        ).round(2)
+
+        display_results = display_results.rename(
+            columns={
+                "confidence": "confidence_%"
+            }
+        )
+
+    if "correct" in display_results.columns:
+
+        display_results["correct"] = (
+            display_results["correct"]
+            .map({
+                True: "✅",
+                False: "❌"
+            })
+        )
+
+    if "signal_correct" in display_results.columns:
+
+        display_results["signal_correct"] = (
+            display_results["signal_correct"]
+            .map({
+                True: "✅",
+                False: "❌"
+            })
+        )
+
+    display_results = display_results.rename(
+        columns={
+            "test": "Test",
+            "timestamp": "Prediction Time",
+            "prediction": "V7 Prediction",
+            "confidence_%": "Confidence %",
+            "signal": "Signal",
+            "agreement": "Models Agree",
+            "actual": "Actual Candle",
+            "correct": "Prediction",
+            "signal_correct": "Signal Result",
+            "next_open": "Next Open",
+            "next_close": "Next Close"
+        }
+    )
+
+    preferred_columns = [
+        "Test",
+        "Prediction Time",
+        "V7 Prediction",
+        "Confidence %",
+        "Signal",
+        "Models Agree",
+        "Actual Candle",
+        "Prediction",
+        "Next Open",
+        "Next Close"
+    ]
+
+    final_columns = [
+        c
+        for c in preferred_columns
+        if c in display_results.columns
+    ]
+
+    st.dataframe(
+        display_results[final_columns],
+        use_container_width=True,
+        hide_index=True
+    )
+
+else:
+
+    st.warning(
+        "No individual test results were returned."
+    )
+
+
+# =========================================================
+# TEST INTERPRETATION
+# =========================================================
+
+st.divider()
+
+st.header(
+    "🧠 HOW WE JUDGE THE TEST"
 )
 
 st.write(
-    f"We want to test whether V7 can correctly predict "
-    f"the direction of the next 15M candle."
+    "For every historical test, V7 is placed at a point "
+    "before the next 15M candle begins."
 )
 
 st.write(
-    f"Target test size: **{test_count} historical candles**."
+    "V7 makes its prediction using information available "
+    "at that time."
 )
 
-st.info(
-    "Example: if V7 says BULLISH before a candle starts "
-    "and that candle closes above its open, the prediction "
-    "is CORRECT. If it closes below its open, the prediction "
-    "is WRONG."
+st.write(
+    "Then we look at the NEXT candle:"
+)
+
+st.write(
+    "🟢 Next candle CLOSE > OPEN = BULLISH"
+)
+
+st.write(
+    "🔴 Next candle CLOSE < OPEN = BEARISH"
+)
+
+st.write(
+    "⚪ Next candle CLOSE = OPEN = NEUTRAL"
+)
+
+st.write(
+    "The prediction is correct only when V7's predicted "
+    "direction matches what that next candle actually did."
 )
 
 
@@ -611,7 +957,7 @@ st.dataframe(
 
 
 # =========================================================
-# MODEL INFORMATION
+# WHAT V7 DOES
 # =========================================================
 
 st.divider()
@@ -625,12 +971,11 @@ st.write(
 )
 
 st.write(
-    "2. Uses completed 4H candles only as higher-timeframe context."
+    "2. Uses completed 4H candles as higher-timeframe context."
 )
 
 st.write(
-    "3. Trains the model chronologically so future candles "
-    "are not deliberately given to the past."
+    "3. Uses three machine-learning models as an ensemble."
 )
 
 st.write(
@@ -638,8 +983,11 @@ st.write(
 )
 
 st.write(
-    "5. We compare the prediction with what the next candle "
-    "actually did."
+    "5. Runs a chronological 80-candle walk-forward test."
+)
+
+st.write(
+    "6. Compares every prediction with the actual next candle."
 )
 
 
@@ -648,14 +996,14 @@ st.write(
 # =========================================================
 
 st.warning(
-    "⚠️ Do NOT judge V7 from one live prediction. "
-    "We need a large historical test first. "
-    "If it cannot consistently beat random direction "
-    "on unseen candles, we fix the model before V8."
+    "⚠️ Do NOT use the 80-test result as proof that V7 "
+    "will make money in live trading. It is a historical "
+    "research test. We use it to decide whether the model "
+    "deserves further development."
 )
 
 
 st.caption(
-    "Research/paper-trading only. "
+    "NextCandle AI V7 — research/paper-trading only. "
     "AI predictions are estimates and are not guarantees."
 )
