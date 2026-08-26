@@ -7,21 +7,17 @@ from features import make_features
 from model import train_model, predict_next, walk_forward_backtest
 
 
-# =========================================================
-# PAGE
-# =========================================================
-
 st.set_page_config(
-    page_title="NextCandle AI V2",
+    page_title="NextCandle AI V3",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 NextCandle AI — V2")
+st.title("📈 NextCandle AI — V3")
 
 st.caption(
-    "ACEUSDT 15-minute next-candle prediction "
-    "with 4-hour higher-timeframe bias. "
+    "ACEUSDT 15-minute next-candle prediction with "
+    "4-hour higher-timeframe confirmation. "
     "Research/paper-trading only."
 )
 
@@ -45,8 +41,6 @@ with st.sidebar:
         index=0
     )
 
-    interval = "Min15"
-
     history = st.slider(
         "15M historical candles",
         1000,
@@ -56,7 +50,7 @@ with st.sidebar:
     )
 
     threshold = st.slider(
-        "Minimum probability for signal",
+        "Minimum ML probability",
         0.50,
         0.90,
         0.65,
@@ -76,14 +70,11 @@ with st.sidebar:
 if run or "result" not in st.session_state:
 
     with st.spinner(
-        "Downloading ACEUSDT 15M + 4H data and training V2..."
+        "Downloading ACEUSDT 15M + 4H data and "
+        "training V3..."
     ):
 
         try:
-
-            # -------------------------------------------------
-            # 15M DATA
-            # -------------------------------------------------
 
             raw_15m = fetch_klines(
                 symbol,
@@ -91,19 +82,11 @@ if run or "result" not in st.session_state:
                 history
             )
 
-            # -------------------------------------------------
-            # 4H DATA
-            # -------------------------------------------------
-
             raw_4h = fetch_klines(
                 symbol,
                 "Hour4",
                 500
             )
-
-            # -------------------------------------------------
-            # FEATURES
-            # -------------------------------------------------
 
             df = make_features(
                 raw_15m,
@@ -111,34 +94,20 @@ if run or "result" not in st.session_state:
             )
 
             if len(df) < 300:
-
                 raise ValueError(
-                    "Not enough clean historical data "
-                    "after feature calculation."
+                    "Not enough clean historical data."
                 )
-
-            # -------------------------------------------------
-            # TRAIN
-            # -------------------------------------------------
 
             model, feature_cols, metrics = train_model(
                 df
             )
 
-            # -------------------------------------------------
-            # NEXT 15M PREDICTION
-            # -------------------------------------------------
-
-            probs, signal = predict_next(
+            probs, ml_signal = predict_next(
                 model,
                 df,
                 feature_cols,
                 threshold
             )
-
-            # -------------------------------------------------
-            # BACKTEST
-            # -------------------------------------------------
 
             bt = walk_forward_backtest(
                 df,
@@ -149,7 +118,7 @@ if run or "result" not in st.session_state:
             st.session_state.result = (
                 df,
                 probs,
-                signal,
+                ml_signal,
                 metrics,
                 bt
             )
@@ -157,51 +126,249 @@ if run or "result" not in st.session_state:
         except Exception as e:
 
             st.error(
-                f"❌ Could not build V2 model: {e}"
+                f"❌ Could not build V3 model: {e}"
             )
 
             st.stop()
 
 
-# =========================================================
-# RESULTS
-# =========================================================
-
-df, probs, signal, metrics, bt = (
+df, probs, ml_signal, metrics, bt = (
     st.session_state.result
 )
-
 
 latest = df.iloc[-1]
 
 
 # =========================================================
-# DETERMINE 4H BIAS
+# 4H BIAS
 # =========================================================
 
-if "htf_bias_score" in df.columns:
+htf_score = latest.get(
+    "htf_bias_score",
+    0
+)
 
-    htf_score = latest["htf_bias_score"]
+if htf_score >= 2:
 
-    if htf_score >= 2:
+    htf_bias = "BULLISH"
+    htf_icon = "🟢"
 
-        htf_bias = "BULLISH"
-        htf_icon = "🟢"
+elif htf_score <= -2:
 
-    elif htf_score <= -2:
-
-        htf_bias = "BEARISH"
-        htf_icon = "🔴"
-
-    else:
-
-        htf_bias = "NEUTRAL"
-        htf_icon = "⚪"
+    htf_bias = "BEARISH"
+    htf_icon = "🔴"
 
 else:
 
-    htf_bias = "UNKNOWN"
+    htf_bias = "NEUTRAL"
     htf_icon = "⚪"
+
+
+# =========================================================
+# MARKET CONFIRMATION
+# =========================================================
+
+confirmation_score = 0
+confirmation_reasons = []
+
+
+# 4H confirmation
+if htf_bias == "BULLISH":
+
+    confirmation_score += 2
+
+    confirmation_reasons.append(
+        "🟢 4H trend supports BUY direction"
+    )
+
+elif htf_bias == "BEARISH":
+
+    confirmation_score -= 2
+
+    confirmation_reasons.append(
+        "🔴 4H trend supports SELL direction"
+    )
+
+else:
+
+    confirmation_reasons.append(
+        "⚪ 4H trend is neutral"
+    )
+
+
+# 15M momentum
+ret5 = latest.get(
+    "ret5",
+    0
+)
+
+if ret5 > 0:
+
+    confirmation_score += 1
+
+    confirmation_reasons.append(
+        "🟢 15M momentum is bullish"
+    )
+
+elif ret5 < 0:
+
+    confirmation_score -= 1
+
+    confirmation_reasons.append(
+        "🔴 15M momentum is bearish"
+    )
+
+
+# EMA
+ema_gap = latest.get(
+    "ema9_20_gap",
+    0
+)
+
+if ema_gap > 0:
+
+    confirmation_score += 1
+
+    confirmation_reasons.append(
+        "🟢 EMA 9 is above EMA 20"
+    )
+
+elif ema_gap < 0:
+
+    confirmation_score -= 1
+
+    confirmation_reasons.append(
+        "🔴 EMA 9 is below EMA 20"
+    )
+
+
+# RSI
+rsi = latest.get(
+    "rsi14",
+    50
+)
+
+if rsi >= 55:
+
+    confirmation_score += 1
+
+    confirmation_reasons.append(
+        f"🟢 RSI supports bullish momentum ({rsi:.1f})"
+    )
+
+elif rsi <= 45:
+
+    confirmation_score -= 1
+
+    confirmation_reasons.append(
+        f"🔴 RSI supports bearish momentum ({rsi:.1f})"
+    )
+
+else:
+
+    confirmation_reasons.append(
+        f"⚪ RSI is neutral ({rsi:.1f})"
+    )
+
+
+# Volume
+volume_ratio = latest.get(
+    "volume_ratio20",
+    1
+)
+
+if volume_ratio >= 1.20:
+
+    if ret5 > 0:
+
+        confirmation_score += 1
+
+        confirmation_reasons.append(
+            f"🟢 Bullish move has above-average volume "
+            f"({volume_ratio:.2f}x)"
+        )
+
+    elif ret5 < 0:
+
+        confirmation_score -= 1
+
+        confirmation_reasons.append(
+            f"🔴 Bearish move has above-average volume "
+            f"({volume_ratio:.2f}x)"
+        )
+
+else:
+
+    confirmation_reasons.append(
+        f"⚪ Volume confirmation is weak "
+        f"({volume_ratio:.2f}x)"
+    )
+
+
+# =========================================================
+# FINAL CONFIRMATION
+# =========================================================
+
+if ml_signal == "BULLISH":
+
+    ml_direction = 1
+
+elif ml_signal == "BEARISH":
+
+    ml_direction = -1
+
+else:
+
+    ml_direction = 0
+
+
+if ml_direction == 1:
+
+    if confirmation_score >= 2:
+
+        final_signal = "BULLISH"
+        final_icon = "🟢"
+        signal_quality = "STRONG CONFIRMATION"
+
+    elif confirmation_score >= 0:
+
+        final_signal = "BULLISH"
+        final_icon = "🟢"
+        signal_quality = "MIXED CONFIRMATION"
+
+    else:
+
+        final_signal = "WAIT"
+        final_icon = "⚪"
+        signal_quality = "MODEL / MARKET DISAGREEMENT"
+
+
+elif ml_direction == -1:
+
+    if confirmation_score <= -2:
+
+        final_signal = "BEARISH"
+        final_icon = "🔴"
+        signal_quality = "STRONG CONFIRMATION"
+
+    elif confirmation_score <= 0:
+
+        final_signal = "BEARISH"
+        final_icon = "🔴"
+        signal_quality = "MIXED CONFIRMATION"
+
+    else:
+
+        final_signal = "WAIT"
+        final_icon = "⚪"
+        signal_quality = "MODEL / MARKET DISAGREEMENT"
+
+
+else:
+
+    final_signal = "WAIT"
+    final_icon = "⚪"
+    signal_quality = "NO ML EDGE"
 
 
 # =========================================================
@@ -210,10 +377,11 @@ else:
 
 st.divider()
 
-st.subheader("🎯 NEXT 15M CANDLE PREDICTION")
+st.subheader(
+    "🎯 NEXT 15M CANDLE"
+)
 
-
-if signal == "BULLISH":
+if final_signal == "BULLISH":
 
     confidence = probs["bullish"]
 
@@ -221,7 +389,7 @@ if signal == "BULLISH":
         f"🟢 NEXT 15M: BULLISH"
     )
 
-elif signal == "BEARISH":
+elif final_signal == "BEARISH":
 
     confidence = probs["bearish"]
 
@@ -231,27 +399,20 @@ elif signal == "BEARISH":
 
 else:
 
-    best_direction = max(
-        probs,
-        key=probs.get
+    confidence = max(
+        probs.values()
     )
-
-    confidence = probs[best_direction]
 
     st.warning(
-        "⚪ NEXT 15M: NO EDGE — WAIT"
+        "⚪ NEXT 15M: WAIT — INSUFFICIENT CONFIRMATION"
     )
 
-
-# =========================================================
-# KEY METRICS
-# =========================================================
 
 c1, c2, c3, c4 = st.columns(4)
 
 
 c1.metric(
-    "Confidence",
+    "ML Confidence",
     f"{confidence * 100:.1f}%"
 )
 
@@ -261,21 +422,23 @@ c2.metric(
 )
 
 c3.metric(
-    "🟢 Bullish",
-    f"{probs['bullish'] * 100:.1f}%"
+    "Confirmation",
+    f"{confirmation_score:+d}"
 )
 
 c4.metric(
-    "🔴 Bearish",
-    f"{probs['bearish'] * 100:.1f}%"
+    "Signal Quality",
+    signal_quality
 )
 
 
 # =========================================================
-# PROBABILITY BREAKDOWN
+# ML PROBABILITIES
 # =========================================================
 
-st.subheader("📊 Probability Breakdown")
+st.subheader(
+    "🤖 ML Probability"
+)
 
 p1, p2, p3 = st.columns(3)
 
@@ -302,193 +465,46 @@ with p3:
 
 
 # =========================================================
-# SUPPORTING FACTORS
+# CONFIRMATION
 # =========================================================
 
 st.divider()
 
-st.subheader("🔎 Supporting Factors")
+st.subheader(
+    "🔎 Market Confirmation"
+)
+
+for reason in confirmation_reasons:
+
+    st.write(reason)
 
 
-factors = []
+# =========================================================
+# EXPLANATION
+# =========================================================
 
+if ml_direction == 1 and confirmation_score < 0:
 
-# ---------------------------------------------------------
-# 4H TREND
-# ---------------------------------------------------------
-
-if htf_bias == "BULLISH":
-
-    factors.append(
-        "🟢 4H trend is bullish"
+    st.warning(
+        "⚠️ The ML model is bullish, but the current "
+        "market factors are mostly bearish. "
+        "This is classified as model/market disagreement."
     )
 
-elif htf_bias == "BEARISH":
+elif ml_direction == -1 and confirmation_score > 0:
 
-    factors.append(
-        "🔴 4H trend is bearish"
+    st.warning(
+        "⚠️ The ML model is bearish, but the current "
+        "market factors are mostly bullish. "
+        "This is classified as model/market disagreement."
     )
 
-else:
+elif final_signal in ["BULLISH", "BEARISH"]:
 
-    factors.append(
-        "⚪ 4H trend is mixed/neutral"
+    st.info(
+        "The ML prediction and current market confirmation "
+        "are pointing in the same direction."
     )
-
-
-# ---------------------------------------------------------
-# 15M MOMENTUM
-# ---------------------------------------------------------
-
-ret5 = latest.get(
-    "ret5",
-    np.nan
-)
-
-if pd.notna(ret5):
-
-    if ret5 > 0:
-
-        factors.append(
-            "🟢 15M momentum is bullish"
-        )
-
-    elif ret5 < 0:
-
-        factors.append(
-            "🔴 15M momentum is bearish"
-        )
-
-    else:
-
-        factors.append(
-            "⚪ 15M momentum is flat"
-        )
-
-
-# ---------------------------------------------------------
-# EMA STRUCTURE
-# ---------------------------------------------------------
-
-ema_gap = latest.get(
-    "ema9_20_gap",
-    np.nan
-)
-
-if pd.notna(ema_gap):
-
-    if ema_gap > 0:
-
-        factors.append(
-            "🟢 EMA 9 is above EMA 20"
-        )
-
-    elif ema_gap < 0:
-
-        factors.append(
-            "🔴 EMA 9 is below EMA 20"
-        )
-
-    else:
-
-        factors.append(
-            "⚪ EMA 9 / EMA 20 are neutral"
-        )
-
-
-# ---------------------------------------------------------
-# RSI
-# ---------------------------------------------------------
-
-rsi = latest.get(
-    "rsi14",
-    np.nan
-)
-
-if pd.notna(rsi):
-
-    if rsi >= 55:
-
-        factors.append(
-            f"🟢 RSI supports bullish momentum ({rsi:.1f})"
-        )
-
-    elif rsi <= 45:
-
-        factors.append(
-            f"🔴 RSI supports bearish momentum ({rsi:.1f})"
-        )
-
-    else:
-
-        factors.append(
-            f"⚪ RSI is neutral ({rsi:.1f})"
-        )
-
-
-# ---------------------------------------------------------
-# VOLUME
-# ---------------------------------------------------------
-
-volume_ratio = latest.get(
-    "volume_ratio20",
-    np.nan
-)
-
-if pd.notna(volume_ratio):
-
-    if volume_ratio > 1.20:
-
-        factors.append(
-            f"🟢 Volume is above average ({volume_ratio:.2f}x)"
-        )
-
-    elif volume_ratio < 0.80:
-
-        factors.append(
-            f"⚪ Volume is below average ({volume_ratio:.2f}x)"
-        )
-
-    else:
-
-        factors.append(
-            f"⚪ Volume is near average ({volume_ratio:.2f}x)"
-        )
-
-
-# ---------------------------------------------------------
-# CANDLE STRUCTURE
-# ---------------------------------------------------------
-
-body = latest.get(
-    "body",
-    np.nan
-)
-
-if pd.notna(body):
-
-    if body > 0:
-
-        factors.append(
-            "🟢 Latest 15M candle closed bullish"
-        )
-
-    elif body < 0:
-
-        factors.append(
-            "🔴 Latest 15M candle closed bearish"
-        )
-
-    else:
-
-        factors.append(
-            "⚪ Latest 15M candle closed neutral"
-        )
-
-
-for factor in factors:
-
-    st.write(factor)
 
 
 # =========================================================
@@ -497,26 +513,25 @@ for factor in factors:
 
 st.divider()
 
-st.subheader("🧭 4-Hour Market Bias")
+st.subheader(
+    "🧭 4-Hour Market Bias"
+)
 
+htf_gap = latest.get(
+    "htf_ema_gap20",
+    np.nan
+)
 
-if "htf_ema_gap20" in df.columns:
-
-    htf_gap = latest["htf_ema_gap20"] * 100
+if pd.notna(htf_gap):
 
     st.write(
-        f"4H EMA20 distance: **{htf_gap:.2f}%**"
+        f"4H EMA20 distance: "
+        f"**{htf_gap * 100:.2f}%**"
     )
 
-    st.write(
-        f"4H bias score: **{htf_score:.0f}**"
-    )
-
-else:
-
-    st.warning(
-        "4H bias data unavailable."
-    )
+st.write(
+    f"4H bias score: **{htf_score:.0f}**"
+)
 
 
 # =========================================================
@@ -528,7 +543,9 @@ left, right = st.columns(2)
 
 with left:
 
-    st.subheader("🧪 Model Validation")
+    st.subheader(
+        "🧪 Model Validation"
+    )
 
     st.write(
         f"Holdout accuracy: "
@@ -546,14 +563,16 @@ with left:
     )
 
     st.caption(
-        "Chronological validation is used. "
-        "The data is not randomly shuffled."
+        "Chronological validation. "
+        "No random shuffling."
     )
 
 
 with right:
 
-    st.subheader("🔄 Walk-Forward Backtest")
+    st.subheader(
+        "🔄 Walk-Forward Backtest"
+    )
 
     st.write(
         f"Predictions: "
@@ -561,28 +580,69 @@ with right:
     )
 
     st.write(
-        f"Direction accuracy: "
+        f"Overall accuracy: "
         f"**{bt['accuracy'] * 100:.2f}%**"
     )
 
     st.write(
-        f"Signals ≥ selected threshold: "
+        f"High-confidence signals: "
         f"**{bt['signals']:,}**"
     )
 
-    if bt["signals"]:
+    st.write(
+        f"Signal accuracy: "
+        f"**{bt['signal_accuracy'] * 100:.2f}%**"
+    )
 
-        st.write(
-            f"Signal accuracy: "
-            f"**{bt['signal_accuracy'] * 100:.2f}%**"
-        )
 
-    else:
+# =========================================================
+# DIRECTION-SPECIFIC BACKTEST
+# =========================================================
 
-        st.write(
-            "No high-confidence signals "
-            "in the backtest window."
-        )
+st.subheader(
+    "📊 Direction Backtest"
+)
+
+b1, b2, b3 = st.columns(3)
+
+
+with b1:
+
+    st.metric(
+        "🟢 Bullish signals",
+        bt["bullish_signals"]
+    )
+
+    st.write(
+        f"Accuracy: "
+        f"**{bt['bullish_accuracy'] * 100:.2f}%**"
+    )
+
+
+with b2:
+
+    st.metric(
+        "🔴 Bearish signals",
+        bt["bearish_signals"]
+    )
+
+    st.write(
+        f"Accuracy: "
+        f"**{bt['bearish_accuracy'] * 100:.2f}%**"
+    )
+
+
+with b3:
+
+    st.metric(
+        "⚪ Neutral signals",
+        bt["neutral_signals"]
+    )
+
+    st.write(
+        f"Accuracy: "
+        f"**{bt['neutral_accuracy'] * 100:.2f}%**"
+    )
 
 
 # =========================================================
@@ -591,7 +651,9 @@ with right:
 
 st.divider()
 
-st.subheader("🕯️ Recent ACEUSDT 15M Candles")
+st.subheader(
+    "🕯️ Recent ACEUSDT 15M Candles"
+)
 
 display_columns = [
     "timestamp",
@@ -609,19 +671,12 @@ available_columns = [
 ]
 
 st.dataframe(
-    df[
-        available_columns
-    ].tail(20),
+    df[available_columns].tail(20),
     use_container_width=True
 )
 
 
-# =========================================================
-# DISCLAIMER
-# =========================================================
-
 st.caption(
-    "V2 does not place orders. Model probabilities are "
-    "estimates based on historical data and are not guarantees "
-    "of future price movement."
+    "V3 does not place orders. Probabilities are model estimates, "
+    "not guarantees of future price movement."
 )
