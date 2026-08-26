@@ -11,6 +11,10 @@ from model import (
 )
 
 
+# =========================================================
+# PAGE CONFIG
+# =========================================================
+
 st.set_page_config(
     page_title="NextCandle AI V6",
     page_icon="📈",
@@ -22,7 +26,7 @@ st.title("📈 NextCandle AI — V6")
 
 st.caption(
     "AI prediction of the NEXT 15-minute candle. "
-    "Direction + estimated next-candle price range. "
+    "Direction + estimated next-candle price. "
     "Research/paper-trading only."
 )
 
@@ -80,17 +84,29 @@ if run or "result" not in st.session_state:
 
         try:
 
+            # ---------------------------------------------
+            # Download 15M data
+            # ---------------------------------------------
+
             raw_15m = fetch_klines(
                 symbol,
                 "Min15",
                 history
             )
 
+            # ---------------------------------------------
+            # Download 4H data
+            # ---------------------------------------------
+
             raw_4h = fetch_klines(
                 symbol,
                 "Hour4",
                 500
             )
+
+            # ---------------------------------------------
+            # Build features
+            # ---------------------------------------------
 
             df = make_features(
                 raw_15m,
@@ -103,38 +119,34 @@ if run or "result" not in st.session_state:
                     "Not enough clean historical candles."
                 )
 
+            # ---------------------------------------------
+            # Train V6
+            # ---------------------------------------------
+
             models, feature_cols, metrics = train_model(
                 df
             )
 
-            # -------------------------------------------------
-            # COMPATIBILITY WITH CURRENT MODEL.PY
-            # -------------------------------------------------
+            # IMPORTANT:
+            # V6 predict_next returns FIVE values.
+            # ---------------------------------------------
 
-            prediction_result = predict_next(
+            (
+                probs,
+                ml_signal,
+                expected_open,
+                predicted_close,
+                expected_move_pct
+            ) = predict_next(
                 models,
                 df,
                 feature_cols,
                 threshold
             )
 
-            if isinstance(
-                prediction_result,
-                tuple
-            ) and len(prediction_result) >= 2:
-
-                probs = prediction_result[0]
-                ml_signal = prediction_result[1]
-
-            else:
-
-                raise ValueError(
-                    "predict_next() returned an unexpected result."
-                )
-
-            # -------------------------------------------------
-            # WALK-FORWARD BACKTEST
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # Walk-forward backtest
+            # ---------------------------------------------
 
             bt = walk_forward_backtest(
                 df,
@@ -142,10 +154,17 @@ if run or "result" not in st.session_state:
                 signal_threshold=threshold
             )
 
+            # ---------------------------------------------
+            # Save result
+            # ---------------------------------------------
+
             st.session_state.result = (
                 df,
                 probs,
                 ml_signal,
+                expected_open,
+                predicted_close,
+                expected_move_pct,
                 metrics,
                 bt
             )
@@ -159,9 +178,21 @@ if run or "result" not in st.session_state:
             st.stop()
 
 
-df, probs, ml_signal, metrics, bt = (
-    st.session_state.result
-)
+# =========================================================
+# LOAD RESULT
+# =========================================================
+
+(
+    df,
+    probs,
+    ml_signal,
+    expected_open,
+    predicted_close,
+    expected_move_pct,
+    metrics,
+    bt
+) = st.session_state.result
+
 
 latest = df.iloc[-1]
 
@@ -192,71 +223,16 @@ else:
 
 
 # =========================================================
-# NEXT CANDLE PRICE ESTIMATION
+# CURRENT PRICE
 # =========================================================
 
 current_close = float(
     latest["close"]
 )
 
-atr_pct = latest.get(
-    "atr14_pct",
-    np.nan
-)
-
-if not pd.notna(atr_pct) or atr_pct <= 0:
-
-    atr_pct = (
-        df["ret1"]
-        .rolling(20)
-        .std()
-        .iloc[-1]
-    )
-
-if not pd.notna(atr_pct) or atr_pct <= 0:
-
-    atr_pct = 0.002
-
-
-# Probability-weighted direction
-
-direction_score = (
-    probs.get("bullish", 0.0)
-    - probs.get("bearish", 0.0)
-)
-
-
-expected_move_pct = (
-    direction_score * atr_pct
-)
-
-
-estimated_close = (
-    current_close
-    * (1 + expected_move_pct)
-)
-
-
-range_pct = max(
-    atr_pct,
-    0.0005
-)
-
-
-estimated_high = (
-    current_close
-    * (1 + range_pct)
-)
-
-
-estimated_low = (
-    current_close
-    * (1 - range_pct)
-)
-
 
 # =========================================================
-# MAIN NEXT 15M PREDICTION
+# MAIN NEXT-CANDLE PREDICTION
 # =========================================================
 
 st.divider()
@@ -275,6 +251,10 @@ confidence = float(
     probs[best_direction]
 )
 
+
+# ---------------------------------------------
+# Direction display
+# ---------------------------------------------
 
 if ml_signal == "BULLISH":
 
@@ -306,37 +286,40 @@ else:
 c1, c2, c3, c4 = st.columns(4)
 
 
-c1.metric(
-    "ML Confidence",
-    f"{confidence * 100:.1f}%"
-)
+with c1:
+
+    st.metric(
+        "ML Confidence",
+        f"{confidence * 100:.1f}%"
+    )
 
 
-c2.metric(
-    "🧭 4H Context",
-    f"{htf_icon} {htf_bias}"
-)
+with c2:
+
+    st.metric(
+        "🧭 4H Context",
+        f"{htf_icon} {htf_bias}"
+    )
 
 
-ensemble_count = metrics.get(
-    "ensemble_models",
-    3
-)
+with c3:
 
-c3.metric(
-    "🤖 Ensemble",
-    f"{ensemble_count} models"
-)
+    st.metric(
+        "🤖 Ensemble",
+        f"{metrics.get('ensemble_models', 3)} models"
+    )
 
 
-c4.metric(
-    "🎯 Threshold",
-    f"{threshold * 100:.0f}%"
-)
+with c4:
+
+    st.metric(
+        "🎯 Threshold",
+        f"{threshold * 100:.0f}%"
+    )
 
 
 # =========================================================
-# NEXT 15M PRICE ESTIMATE
+# NEXT CANDLE PRICE ESTIMATE
 # =========================================================
 
 st.divider()
@@ -346,43 +329,52 @@ st.subheader(
 )
 
 st.caption(
-    "Model-based estimates for the next candle. "
-    "They are not guaranteed future prices."
+    "The regression model estimates the next candle's "
+    "opening reference, closing price and percentage move."
 )
 
 
-q1, q2, q3, q4 = st.columns(4)
+q1, q2, q3 = st.columns(3)
 
 
 with q1:
 
     st.metric(
-        "Expected Open",
-        f"{current_close:.8f}"
+        "Current / Expected Open",
+        f"{expected_open:.8f}"
     )
 
 
 with q2:
 
+    if predicted_close > current_close:
+
+        delta_text = (
+            f"+{expected_move_pct:.3f}%"
+        )
+
+    elif predicted_close < current_close:
+
+        delta_text = (
+            f"{expected_move_pct:.3f}%"
+        )
+
+    else:
+
+        delta_text = "0.000%"
+
     st.metric(
-        "Estimated Close",
-        f"{estimated_close:.8f}"
+        "Predicted Close",
+        f"{predicted_close:.8f}",
+        delta=delta_text
     )
 
 
 with q3:
 
     st.metric(
-        "Estimated High",
-        f"{estimated_high:.8f}"
-    )
-
-
-with q4:
-
-    st.metric(
-        "Estimated Low",
-        f"{estimated_low:.8f}"
+        "Current Price",
+        f"{current_close:.8f}"
     )
 
 
@@ -390,28 +382,48 @@ with q4:
 # EXPECTED MOVE
 # =========================================================
 
-if estimated_close > current_close:
+if expected_move_pct > 0:
 
     move_icon = "🟢"
+    move_direction = "UP"
 
-elif estimated_close < current_close:
+elif expected_move_pct < 0:
 
     move_icon = "🔴"
+    move_direction = "DOWN"
 
 else:
 
     move_icon = "⚪"
+    move_direction = "FLAT"
 
 
 st.info(
-    f"{move_icon} Estimated NEXT 15M move: "
-    f"**{expected_move_pct * 100:.3f}%**"
+    f"{move_icon} Model expects the NEXT 15M candle "
+    f"to move approximately **{expected_move_pct:.3f}% {move_direction}**."
+)
+
+
+# =========================================================
+# PRICE DIFFERENCE
+# =========================================================
+
+price_difference = (
+    predicted_close - current_close
+)
+
+
+st.write(
+    f"Estimated price difference: "
+    f"**{price_difference:+.8f}**"
 )
 
 
 # =========================================================
 # PROBABILITY BREAKDOWN
 # =========================================================
+
+st.divider()
 
 st.subheader(
     "🤖 V6 Probability Breakdown"
@@ -425,7 +437,7 @@ with p1:
 
     st.metric(
         "🟢 Bullish",
-        f"{probs.get('bullish', 0) * 100:.2f}%"
+        f"{probs['bullish'] * 100:.2f}%"
     )
 
 
@@ -433,7 +445,7 @@ with p2:
 
     st.metric(
         "⚪ Neutral",
-        f"{probs.get('neutral', 0) * 100:.2f}%"
+        f"{probs['neutral'] * 100:.2f}%"
     )
 
 
@@ -441,7 +453,7 @@ with p3:
 
     st.metric(
         "🔴 Bearish",
-        f"{probs.get('bearish', 0) * 100:.2f}%"
+        f"{probs['bearish'] * 100:.2f}%"
     )
 
 
@@ -456,24 +468,24 @@ st.subheader(
 )
 
 st.write(
-    "V6 is focused specifically on predicting the "
-    "NEXT 15-minute candle."
+    "V6 is focused specifically on predicting "
+    "the NEXT 15-minute candle."
 )
 
 st.write(
-    "The ensemble combines multiple machine-learning "
-    "models and uses their probabilities to determine "
-    "the strongest direction."
+    "The ensemble uses three classification models "
+    "to estimate the probability of a bullish, neutral "
+    "or bearish next candle."
 )
 
 st.write(
-    "The 4H timeframe is used only as higher-timeframe "
-    "context for the next 15M prediction."
+    "A separate regression model estimates the percentage "
+    "return of the NEXT 15-minute candle."
 )
 
 st.write(
-    "V6 also provides an estimated next-candle close "
-    "and volatility-based high/low range."
+    "The 4H timeframe is used as context inside the "
+    "prediction system."
 )
 
 
@@ -484,18 +496,16 @@ st.write(
 if ml_signal == "BULLISH":
 
     st.success(
-        f"🎯 V6 prediction: "
-        f"NEXT 15M candle is most likely "
-        f"**BULLISH** with "
+        f"🎯 V6 prediction: NEXT 15M candle is "
+        f"most likely **BULLISH** with "
         f"{confidence * 100:.1f}% model confidence."
     )
 
 elif ml_signal == "BEARISH":
 
     st.error(
-        f"🎯 V6 prediction: "
-        f"NEXT 15M candle is most likely "
-        f"**BEARISH** with "
+        f"🎯 V6 prediction: NEXT 15M candle is "
+        f"most likely **BEARISH** with "
         f"{confidence * 100:.1f}% model confidence."
     )
 
@@ -536,10 +546,9 @@ st.write(
     f"4H bias score: **{htf_score:.0f}**"
 )
 
-
 st.caption(
-    "4H data is model context only. "
-    "The app remains focused on the NEXT 15M candle."
+    "4H data is context for the NEXT 15M prediction. "
+    "It is not a separate trade-analysis system."
 )
 
 
@@ -560,22 +569,27 @@ with left:
 
     st.write(
         f"Holdout accuracy: "
-        f"**{metrics.get('holdout_accuracy', 0) * 100:.2f}%**"
+        f"**{metrics['holdout_accuracy'] * 100:.2f}%**"
     )
 
     st.write(
         f"Training samples: "
-        f"**{metrics.get('train_samples', 0):,}**"
+        f"**{metrics['train_samples']:,}**"
     )
 
     st.write(
         f"Holdout samples: "
-        f"**{metrics.get('holdout_samples', 0):,}**"
+        f"**{metrics['holdout_samples']:,}**"
+    )
+
+    st.write(
+        f"Close-return MAE: "
+        f"**{metrics.get('close_mae_pct', 0):.4f}%**"
     )
 
     st.caption(
-        "No random shuffle. Training data always comes "
-        "before validation data."
+        "No random shuffle. Training data comes before "
+        "validation data."
     )
 
 
@@ -587,22 +601,22 @@ with right:
 
     st.write(
         f"Predictions: "
-        f"**{bt.get('predictions', 0):,}**"
+        f"**{bt['predictions']:,}**"
     )
 
     st.write(
         f"Overall accuracy: "
-        f"**{bt.get('accuracy', 0) * 100:.2f}%**"
+        f"**{bt['accuracy'] * 100:.2f}%**"
     )
 
     st.write(
         f"High-confidence signals: "
-        f"**{bt.get('signals', 0):,}**"
+        f"**{bt['signals']:,}**"
     )
 
     st.write(
         f"Signal accuracy: "
-        f"**{bt.get('signal_accuracy', 0) * 100:.2f}%**"
+        f"**{bt['signal_accuracy'] * 100:.2f}%**"
     )
 
 
@@ -622,8 +636,81 @@ with b1:
 
     st.metric(
         "🟢 Bullish",
-        bt.get("bullish_signals", 0)
+        bt["bullish_signals"]
     )
 
     st.write(
-       
+        f"Accuracy: "
+        f"**{bt['bullish_accuracy'] * 100:.2f}%**"
+    )
+
+
+with b2:
+
+    st.metric(
+        "🔴 Bearish",
+        bt["bearish_signals"]
+    )
+
+    st.write(
+        f"Accuracy: "
+        f"**{bt['bearish_accuracy'] * 100:.2f}%**"
+    )
+
+
+with b3:
+
+    st.metric(
+        "⚪ Neutral",
+        bt["neutral_signals"]
+    )
+
+    st.write(
+        f"Accuracy: "
+        f"**{bt['neutral_accuracy'] * 100:.2f}%**"
+    )
+
+
+# =========================================================
+# RECENT CANDLES
+# =========================================================
+
+st.divider()
+
+st.subheader(
+    f"🕯️ Recent {symbol} 15M Candles"
+)
+
+
+display_columns = [
+    "timestamp",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume"
+]
+
+
+available_columns = [
+    c
+    for c in display_columns
+    if c in df.columns
+]
+
+
+st.dataframe(
+    df[available_columns].tail(20),
+    use_container_width=True
+)
+
+
+# =========================================================
+# DISCLAIMER
+# =========================================================
+
+st.caption(
+    "V6 predicts only the NEXT 15-minute candle. "
+    "Price and probability outputs are model estimates, "
+    "not guarantees of future market movement."
+)
