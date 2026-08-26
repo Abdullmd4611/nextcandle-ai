@@ -5,10 +5,6 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score
 
 
-# =========================================================
-# COLUMNS THAT MUST NEVER BE USED AS MODEL FEATURES
-# =========================================================
-
 EXCLUDE = {
     "timestamp",
     "open",
@@ -21,12 +17,7 @@ EXCLUDE = {
 }
 
 
-# =========================================================
-# FEATURE SELECTION
-# =========================================================
-
 def feature_columns(df):
-
     return [
         c
         for c in df.columns
@@ -35,9 +26,16 @@ def feature_columns(df):
     ]
 
 
-# =========================================================
-# TRAIN MODEL
-# =========================================================
+def _make_model():
+    return HistGradientBoostingClassifier(
+        max_iter=250,
+        learning_rate=0.04,
+        max_leaf_nodes=15,
+        min_samples_leaf=25,
+        l2_regularization=1.5,
+        random_state=42
+    )
+
 
 def train_model(df):
 
@@ -48,39 +46,24 @@ def train_model(df):
             "No usable model features were found."
         )
 
-    if "target" not in df.columns:
-        raise ValueError(
-            "Target column is missing."
-        )
-
     data = df.dropna(
         subset=cols + ["target"]
     ).copy()
 
     if len(data) < 300:
         raise ValueError(
-            "Not enough clean historical candles "
-            "to train the model."
+            "Not enough clean historical candles."
         )
 
     X = data[cols]
 
     y = data["target"].map({
-        -1: 0,   # BEARISH
-         0: 1,   # NEUTRAL
-         1: 2    # BULLISH
+        -1: 0,
+        0: 1,
+        1: 2
     }).astype(int)
 
-    # ---------------------------------------------------------
-    # CHRONOLOGICAL SPLIT
-    # ---------------------------------------------------------
-
     split = int(len(data) * 0.80)
-
-    if split <= 0 or split >= len(data):
-        raise ValueError(
-            "Invalid chronological train/test split."
-        )
 
     X_train = X.iloc[:split]
     X_test = X.iloc[split:]
@@ -88,18 +71,7 @@ def train_model(df):
     y_train = y.iloc[:split]
     y_test = y.iloc[split:]
 
-    # ---------------------------------------------------------
-    # MODEL
-    # ---------------------------------------------------------
-
-    model = HistGradientBoostingClassifier(
-        max_iter=250,
-        learning_rate=0.04,
-        max_leaf_nodes=15,
-        min_samples_leaf=25,
-        l2_regularization=1.5,
-        random_state=42
-    )
+    model = _make_model()
 
     model.fit(
         X_train,
@@ -110,14 +82,9 @@ def train_model(df):
         X_test
     )
 
-    accuracy = accuracy_score(
-        y_test,
-        pred
-    )
-
     metrics = {
         "holdout_accuracy": float(
-            accuracy
+            accuracy_score(y_test, pred)
         ),
         "holdout_samples": int(
             len(y_test)
@@ -130,21 +97,12 @@ def train_model(df):
     return model, cols, metrics
 
 
-# =========================================================
-# NEXT 15-MINUTE PREDICTION
-# =========================================================
-
 def predict_next(
     model,
     df,
     cols,
     threshold=0.65
 ):
-
-    if len(df) == 0:
-        raise ValueError(
-            "No candle data available for prediction."
-        )
 
     latest = df[cols].iloc[[-1]]
 
@@ -153,7 +111,7 @@ def predict_next(
             "Latest candle contains missing features."
         )
 
-    probabilities = model.predict_proba(
+    p = model.predict_proba(
         latest
     )[0]
 
@@ -161,23 +119,14 @@ def predict_next(
         int(k): float(v)
         for k, v in zip(
             model.classes_,
-            probabilities
+            p
         )
     }
 
     probs = {
-        "bearish": mapping.get(
-            0,
-            0.0
-        ),
-        "neutral": mapping.get(
-            1,
-            0.0
-        ),
-        "bullish": mapping.get(
-            2,
-            0.0
-        ),
+        "bearish": mapping.get(0, 0.0),
+        "neutral": mapping.get(1, 0.0),
+        "bullish": mapping.get(2, 0.0),
     }
 
     best = max(
@@ -185,24 +134,16 @@ def predict_next(
         key=probs.get
     )
 
-    confidence = float(
-        probs[best]
+    confidence = probs[best]
+
+    signal = (
+        best.upper()
+        if confidence >= threshold
+        else "NO EDGE"
     )
-
-    if confidence >= threshold:
-
-        signal = best.upper()
-
-    else:
-
-        signal = "NO EDGE"
 
     return probs, signal
 
-
-# =========================================================
-# WALK-FORWARD BACKTEST
-# =========================================================
 
 def walk_forward_backtest(
     df,
@@ -222,21 +163,23 @@ def walk_forward_backtest(
             "predictions": 0,
             "accuracy": 0.0,
             "signals": 0,
-            "signal_accuracy": 0.0
+            "signal_accuracy": 0.0,
+            "bullish_signals": 0,
+            "bullish_accuracy": 0.0,
+            "bearish_signals": 0,
+            "bearish_accuracy": 0.0,
+            "neutral_signals": 0,
+            "neutral_accuracy": 0.0
         }
 
     preds = []
     actuals = []
+
     signal_preds = []
 
-    # ---------------------------------------------------------
-    # WALK FORWARD
-    #
-    # At every step:
-    #   train ONLY on candles before the test window.
-    #
-    # No future candles are placed into training.
-    # ---------------------------------------------------------
+    bullish = []
+    bearish = []
+    neutral = []
 
     for i in range(
         min_train,
@@ -258,25 +201,14 @@ def walk_forward_backtest(
 
         ytrain = train["target"].map({
             -1: 0,
-             0: 1,
-             1: 2
+            0: 1,
+            1: 2
         }).astype(int)
-
-        # -----------------------------------------------------
-        # Skip windows where training contains only one class.
-        # -----------------------------------------------------
 
         if ytrain.nunique() < 2:
             continue
 
-        model = HistGradientBoostingClassifier(
-            max_iter=150,
-            learning_rate=0.05,
-            max_leaf_nodes=15,
-            min_samples_leaf=25,
-            l2_regularization=1.5,
-            random_state=42
-        )
+        model = _make_model()
 
         model.fit(
             train[cols],
@@ -291,19 +223,19 @@ def walk_forward_backtest(
             test[cols]
         )
 
-        preds.extend(
-            pred.tolist()
-        )
-
         actual = (
             test["target"]
             .map({
                 -1: 0,
-                 0: 1,
-                 1: 2
+                0: 1,
+                1: 2
             })
             .astype(int)
             .tolist()
+        )
+
+        preds.extend(
+            pred.tolist()
         )
 
         actuals.extend(
@@ -320,43 +252,73 @@ def walk_forward_backtest(
             confidence
         ):
 
+            pp = int(pp)
+            yy = int(yy)
+            cc = float(cc)
+
             if cc >= signal_threshold:
 
                 signal_preds.append(
-                    (
-                        int(pp),
-                        int(yy)
-                    )
+                    (pp, yy)
                 )
 
-    # =========================================================
-    # OVERALL ACCURACY
-    # =========================================================
+                if pp == 2:
+                    bullish.append(
+                        pp == yy
+                    )
 
-    accuracy = (
-        float(
+                elif pp == 0:
+                    bearish.append(
+                        pp == yy
+                    )
+
+                elif pp == 1:
+                    neutral.append(
+                        pp == yy
+                    )
+
+    if preds:
+
+        accuracy = float(
             np.mean(
                 np.array(preds)
                 == np.array(actuals)
             )
         )
-        if preds
-        else 0.0
-    )
 
-    # =========================================================
-    # HIGH-CONFIDENCE SIGNAL ACCURACY
-    # =========================================================
+    else:
 
-    signal_accuracy = (
-        float(
+        accuracy = 0.0
+
+    if signal_preds:
+
+        signal_accuracy = float(
             np.mean([
                 p == y
                 for p, y
                 in signal_preds
             ])
         )
-        if signal_preds
+
+    else:
+
+        signal_accuracy = 0.0
+
+    bullish_accuracy = (
+        float(np.mean(bullish))
+        if bullish
+        else 0.0
+    )
+
+    bearish_accuracy = (
+        float(np.mean(bearish))
+        if bearish
+        else 0.0
+    )
+
+    neutral_accuracy = (
+        float(np.mean(neutral))
+        if neutral
         else 0.0
     )
 
@@ -368,5 +330,20 @@ def walk_forward_backtest(
         "signals": int(
             len(signal_preds)
         ),
-        "signal_accuracy": signal_accuracy
+        "signal_accuracy": signal_accuracy,
+
+        "bullish_signals": int(
+            len(bullish)
+        ),
+        "bullish_accuracy": bullish_accuracy,
+
+        "bearish_signals": int(
+            len(bearish)
+        ),
+        "bearish_accuracy": bearish_accuracy,
+
+        "neutral_signals": int(
+            len(neutral)
+        ),
+        "neutral_accuracy": neutral_accuracy
     }
