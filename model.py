@@ -46,9 +46,9 @@ def feature_columns(df):
 
 def _classifier(
     random_state=42,
-    max_iter=180,
+    max_iter=120,
     learning_rate=0.04,
-    max_leaf_nodes=15,
+    max_leaf_nodes=12,
     min_samples_leaf=25,
     l2_regularization=1.5
 ):
@@ -70,13 +70,33 @@ def _classifier(
 def _regressor():
 
     return HistGradientBoostingRegressor(
-        max_iter=180,
+        max_iter=120,
         learning_rate=0.04,
-        max_leaf_nodes=15,
+        max_leaf_nodes=12,
         min_samples_leaf=25,
         l2_regularization=1.5,
         random_state=42
     )
+
+
+# =========================================================
+# EMPTY BACKTEST RESULT
+# =========================================================
+
+def _empty_backtest():
+
+    return {
+        "predictions": 0,
+        "accuracy": 0.0,
+        "signals": 0,
+        "signal_accuracy": 0.0,
+        "bullish_signals": 0,
+        "bullish_accuracy": 0.0,
+        "bearish_signals": 0,
+        "bearish_accuracy": 0.0,
+        "neutral_signals": 0,
+        "neutral_accuracy": 0.0
+    }
 
 
 # =========================================================
@@ -88,16 +108,14 @@ def train_model(df):
     cols = feature_columns(df)
 
     if not cols:
+
         raise ValueError(
             "No usable model features were found."
         )
 
     data = df.copy()
 
-    # -----------------------------------------------------
     # Next-candle return
-    # -----------------------------------------------------
-
     data["future_return"] = (
         data["close"].shift(-1)
         / data["close"]
@@ -127,7 +145,8 @@ def train_model(df):
     if len(data) < 500:
 
         raise ValueError(
-            "Not enough clean historical candles."
+            f"Not enough clean historical candles. "
+            f"Only {len(data)} available."
         )
 
     X = data[cols]
@@ -164,32 +183,32 @@ def train_model(df):
     r_test = y_return.iloc[split:]
 
     # =====================================================
-    # THREE MODELS
+    # THREE LIVE CLASSIFICATION MODELS
     # =====================================================
 
     classifiers = [
 
         _classifier(
             random_state=42,
-            max_iter=180,
+            max_iter=120,
             learning_rate=0.04,
-            max_leaf_nodes=15,
+            max_leaf_nodes=12,
             min_samples_leaf=25,
             l2_regularization=1.5
         ),
 
         _classifier(
             random_state=123,
-            max_iter=200,
+            max_iter=140,
             learning_rate=0.03,
-            max_leaf_nodes=12,
+            max_leaf_nodes=10,
             min_samples_leaf=30,
             l2_regularization=2.0
         ),
 
         _classifier(
             random_state=321,
-            max_iter=160,
+            max_iter=110,
             learning_rate=0.05,
             max_leaf_nodes=10,
             min_samples_leaf=20,
@@ -197,9 +216,9 @@ def train_model(df):
         )
     ]
 
-    # -----------------------------------------------------
-    # Train classifiers
-    # -----------------------------------------------------
+    # =====================================================
+    # TRAIN THREE MODELS
+    # =====================================================
 
     for model in classifiers:
 
@@ -208,9 +227,9 @@ def train_model(df):
             y_train
         )
 
-    # -----------------------------------------------------
-    # Ensemble probabilities
-    # -----------------------------------------------------
+    # =====================================================
+    # ENSEMBLE TEST
+    # =====================================================
 
     test_probabilities = []
 
@@ -233,7 +252,7 @@ def train_model(df):
     )
 
     # =====================================================
-    # REGRESSION
+    # REGRESSION MODEL
     # =====================================================
 
     regressor = _regressor()
@@ -308,7 +327,7 @@ def predict_next(
         )
 
     # =====================================================
-    # ENSEMBLE PROBABILITY
+    # ENSEMBLE PROBABILITIES
     # =====================================================
 
     probabilities = []
@@ -326,9 +345,9 @@ def predict_next(
         axis=0
     )
 
-    # -----------------------------------------------------
-    # Convert model classes into fixed mapping
-    # -----------------------------------------------------
+    # =====================================================
+    # FIXED CLASS MAPPING
+    # =====================================================
 
     mapping = {
         int(k): float(v)
@@ -415,7 +434,7 @@ def predict_next(
         signal = "NO EDGE"
 
     # =====================================================
-    # NEXT-CANDLE RETURN
+    # NEXT CANDLE RETURN
     # =====================================================
 
     predicted_return = float(
@@ -440,8 +459,7 @@ def predict_next(
     )
 
     # =====================================================
-    # IMPORTANT
-    #
+    # IMPORTANT:
     # app.py expects EXACTLY FIVE VALUES.
     # =====================================================
 
@@ -462,7 +480,7 @@ def walk_forward_backtest(
     df,
     cols,
     min_train=1000,
-    step=200,
+    step=500,
     signal_threshold=0.65
 ):
 
@@ -489,24 +507,13 @@ def walk_forward_backtest(
         .copy()
     )
 
-    # -----------------------------------------------------
-    # Not enough data
-    # -----------------------------------------------------
+    # =====================================================
+    # NOT ENOUGH DATA
+    # =====================================================
 
-    if len(data) <= min_train + step:
+    if len(data) <= min_train + 50:
 
-        return {
-            "predictions": 0,
-            "accuracy": 0.0,
-            "signals": 0,
-            "signal_accuracy": 0.0,
-            "bullish_signals": 0,
-            "bullish_accuracy": 0.0,
-            "bearish_signals": 0,
-            "bearish_accuracy": 0.0,
-            "neutral_signals": 0,
-            "neutral_accuracy": 0.0
-        }
+        return _empty_backtest()
 
     preds = []
     actuals = []
@@ -518,9 +525,10 @@ def walk_forward_backtest(
     neutral = []
 
     # =====================================================
-    # FAST WALK-FORWARD
+    # FAST VALIDATION
     #
-    # Larger step = fewer training cycles.
+    # step=500 means only a small number of
+    # validation training cycles.
     # =====================================================
 
     for i in range(
@@ -539,6 +547,7 @@ def walk_forward_backtest(
         ]
 
         if len(test) == 0:
+
             continue
 
         ytrain = (
@@ -552,19 +561,20 @@ def walk_forward_backtest(
         )
 
         if ytrain.nunique() < 2:
+
             continue
 
-        # -------------------------------------------------
-        # Use ONE classifier for fast validation.
+        # =================================================
+        # ONE FAST MODEL FOR VALIDATION
         #
-        # The live model still uses all 3 models.
-        # -------------------------------------------------
+        # Live prediction still uses THREE models.
+        # =================================================
 
         model = _classifier(
             random_state=42,
-            max_iter=120,
+            max_iter=80,
             learning_rate=0.04,
-            max_leaf_nodes=12,
+            max_leaf_nodes=10,
             min_samples_leaf=25,
             l2_regularization=1.5
         )
@@ -606,9 +616,9 @@ def walk_forward_backtest(
             axis=1
         )
 
-        # -------------------------------------------------
-        # High-confidence signals
-        # -------------------------------------------------
+        # =================================================
+        # HIGH-CONFIDENCE SIGNALS
+        # =================================================
 
         for pp, yy, cc in zip(
             pred,
@@ -681,7 +691,7 @@ def walk_forward_backtest(
     )
 
     # =====================================================
-    # RESULTS
+    # RETURN RESULTS
     # =====================================================
 
     return {
