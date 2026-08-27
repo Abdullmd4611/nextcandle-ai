@@ -23,24 +23,15 @@ def make_features(df, htf_df=None):
     )
 
     # =========================================================
-    # 15M RETURNS
+    # 15M PRICE MOMENTUM
     # =========================================================
 
-    x["ret1"] = (
-        x["close"].pct_change()
-    )
-
-    x["ret3"] = (
-        x["close"].pct_change(3)
-    )
-
-    x["ret5"] = (
-        x["close"].pct_change(5)
-    )
-
-    x["ret10"] = (
-        x["close"].pct_change(10)
-    )
+    x["ret1"] = x["close"].pct_change(1)
+    x["ret2"] = x["close"].pct_change(2)
+    x["ret3"] = x["close"].pct_change(3)
+    x["ret5"] = x["close"].pct_change(5)
+    x["ret10"] = x["close"].pct_change(10)
+    x["ret20"] = x["close"].pct_change(20)
 
     # =========================================================
     # CANDLE STRUCTURE
@@ -83,20 +74,34 @@ def make_features(df, htf_df=None):
         x["close"] > x["open"]
     ).astype(int)
 
-    x["prev_green"] = (
-        x["green"].shift(1)
+    x["prev_green"] = x["green"].shift(1)
+
+    x["green_3"] = (
+        x["green"]
+        .rolling(3)
+        .sum()
     )
 
-    x["three_green"] = (
-        x["green"].rolling(3).sum()
+    x["green_5"] = (
+        x["green"]
+        .rolling(5)
+        .sum()
     )
 
-    x["three_red"] = (
-        (1 - x["green"]).rolling(3).sum()
+    x["red_3"] = (
+        (1 - x["green"])
+        .rolling(3)
+        .sum()
+    )
+
+    x["red_5"] = (
+        (1 - x["green"])
+        .rolling(5)
+        .sum()
     )
 
     # =========================================================
-    # EMA / TREND
+    # EMA TREND
     # =========================================================
 
     for n in [9, 20, 50, 100, 200]:
@@ -125,6 +130,16 @@ def make_features(df, htf_df=None):
         adjust=False
     ).mean()
 
+    ema100 = x["close"].ewm(
+        span=100,
+        adjust=False
+    ).mean()
+
+    ema200 = x["close"].ewm(
+        span=200,
+        adjust=False
+    ).mean()
+
     x["ema9_20_gap"] = (
         ema9 / ema20 - 1
     )
@@ -133,12 +148,24 @@ def make_features(df, htf_df=None):
         ema20 / ema50 - 1
     )
 
+    x["ema50_100_gap"] = (
+        ema50 / ema100 - 1
+    )
+
+    x["ema100_200_gap"] = (
+        ema100 / ema200 - 1
+    )
+
     x["ema9_slope"] = (
         ema9.pct_change(3)
     )
 
     x["ema20_slope"] = (
         ema20.pct_change(3)
+    )
+
+    x["ema50_slope"] = (
+        ema50.pct_change(5)
     )
 
     # =========================================================
@@ -169,7 +196,7 @@ def make_features(df, htf_df=None):
         - (100 / (1 + rs))
     )
 
-    x["rsi_mid_gap"] = (
+    x["rsi_gap"] = (
         x["rsi14"] - 50
     ) / 50
 
@@ -180,7 +207,9 @@ def make_features(df, htf_df=None):
     for n in [5, 10, 20, 50]:
 
         x[f"volatility_{n}"] = (
-            x["ret1"].rolling(n).std()
+            x["ret1"]
+            .rolling(n)
+            .std()
         )
 
     previous_close = (
@@ -190,20 +219,24 @@ def make_features(df, htf_df=None):
     true_range = pd.concat(
         [
             x["high"] - x["low"],
+
             (
                 x["high"]
                 - previous_close
             ).abs(),
+
             (
                 x["low"]
                 - previous_close
-            ).abs(),
+            ).abs()
         ],
         axis=1
     ).max(axis=1)
 
     x["atr14_pct"] = (
-        true_range.rolling(14).mean()
+        true_range
+        .rolling(14)
+        .mean()
         / x["close"]
     )
 
@@ -214,11 +247,15 @@ def make_features(df, htf_df=None):
     for n in [5, 10, 20, 50]:
 
         rolling_high = (
-            x["high"].rolling(n).max()
+            x["high"]
+            .rolling(n)
+            .max()
         )
 
         rolling_low = (
-            x["low"].rolling(n).min()
+            x["low"]
+            .rolling(n)
+            .min()
         )
 
         x[f"dist_high_{n}"] = (
@@ -242,11 +279,15 @@ def make_features(df, htf_df=None):
     )
 
     vol_mean20 = (
-        x["volume"].rolling(20).mean()
+        x["volume"]
+        .rolling(20)
+        .mean()
     )
 
     vol_std20 = (
-        x["volume"].rolling(20).std()
+        x["volume"]
+        .rolling(20)
+        .std()
     )
 
     x["vol_z20"] = (
@@ -254,7 +295,10 @@ def make_features(df, htf_df=None):
             x["volume"]
             - vol_mean20
         )
-        / vol_std20.replace(0, np.nan)
+        / vol_std20.replace(
+            0,
+            np.nan
+        )
     )
 
     x["volume_ratio20"] = (
@@ -283,6 +327,7 @@ def make_features(df, htf_df=None):
         h = (
             h
             .sort_values("timestamp")
+            .drop_duplicates("timestamp")
             .reset_index(drop=True)
         )
 
@@ -332,7 +377,8 @@ def make_features(df, htf_df=None):
         )
 
         h["htf_ema20_slope"] = (
-            h["htf_ema20"].pct_change(3)
+            h["htf_ema20"]
+            .pct_change(3)
         )
 
         h["htf_ret1"] = (
@@ -357,10 +403,7 @@ def make_features(df, htf_df=None):
             h["close"] > h["open"]
         ).astype(int)
 
-        # Remove newest 4H candle if necessary.
-        # Only completed HTF candles should influence
-        # the 15M model.
-
+        # Only completed 4H candles
         now = pd.Timestamp.now(
             tz="UTC"
         )
@@ -387,7 +430,7 @@ def make_features(df, htf_df=None):
                 "htf_ret3",
                 "htf_body",
                 "htf_range",
-                "htf_green",
+                "htf_green"
             ]
         ].rename(
             columns={
@@ -395,49 +438,43 @@ def make_features(df, htf_df=None):
             }
         )
 
-        x = pd.merge_asof(
-            x.sort_values("timestamp"),
-            h.sort_values("timestamp"),
-            on="timestamp",
-            direction="backward"
-        )
+        if len(h) > 0:
+
+            x = pd.merge_asof(
+                x.sort_values("timestamp"),
+                h.sort_values("timestamp"),
+                on="timestamp",
+                direction="backward"
+            )
 
     # =========================================================
-    # 4H BIAS SCORE
+    # 4H BIAS
     # =========================================================
 
     if "htf_ema_gap20" in x.columns:
 
         bullish_conditions = (
             (x["htf_ema_gap20"] > 0).astype(int)
-            + (
-                x["htf_ema20_50_gap"] > 0
-            ).astype(int)
-            + (
-                x["htf_ema50_200_gap"] > 0
-            ).astype(int)
-            + (
-                x["htf_ema20_slope"] > 0
-            ).astype(int)
-            + (
-                x["htf_ret3"] > 0
-            ).astype(int)
+            +
+            (x["htf_ema20_50_gap"] > 0).astype(int)
+            +
+            (x["htf_ema50_200_gap"] > 0).astype(int)
+            +
+            (x["htf_ema20_slope"] > 0).astype(int)
+            +
+            (x["htf_ret3"] > 0).astype(int)
         )
 
         bearish_conditions = (
             (x["htf_ema_gap20"] < 0).astype(int)
-            + (
-                x["htf_ema20_50_gap"] < 0
-            ).astype(int)
-            + (
-                x["htf_ema50_200_gap"] < 0
-            ).astype(int)
-            + (
-                x["htf_ema20_slope"] < 0
-            ).astype(int)
-            + (
-                x["htf_ret3"] < 0
-            ).astype(int)
+            +
+            (x["htf_ema20_50_gap"] < 0).astype(int)
+            +
+            (x["htf_ema50_200_gap"] < 0).astype(int)
+            +
+            (x["htf_ema20_slope"] < 0).astype(int)
+            +
+            (x["htf_ret3"] < 0).astype(int)
         )
 
         x["htf_bias_score"] = (
@@ -445,78 +482,30 @@ def make_features(df, htf_df=None):
             - bearish_conditions
         )
 
-    # =========================================================
-    # NEXT CANDLE DIRECTION TARGET
-    # =========================================================
+    else:
 
-    future_return = (
-        x["close"].shift(-1)
-        / x["close"]
-        - 1
-    )
-
-    recent_vol = (
-        x["ret1"].rolling(20).std()
-    )
-
-    neutral_threshold = (
-        recent_vol * 0.50
-    ).clip(
-        lower=0.0001
-    )
-
-    x["target"] = np.select(
-        [
-            future_return > neutral_threshold,
-            future_return < -neutral_threshold,
-        ],
-        [
-            1,
-            -1,
-        ],
-        default=0
-    )
+        x["htf_bias_score"] = 0
 
     # =========================================================
-    # NEXT CANDLE OHLC REGRESSION TARGETS
+    # BINARY NEXT-CANDLE TARGET
+    #
+    # 1 = next candle bullish
+    # 0 = next candle bearish
+    #
+    # NO NEUTRAL CLASS
     # =========================================================
 
-    # Next OPEN relative to current close
-    x["future_open_return"] = (
+    next_open = (
         x["open"].shift(-1)
-        / x["close"]
-        - 1
     )
 
-    # Next HIGH relative to current close
-    x["future_high_return"] = (
-        x["high"].shift(-1)
-        / x["close"]
-        - 1
-    )
-
-    # Next LOW relative to current close
-    x["future_low_return"] = (
-        x["low"].shift(-1)
-        / x["close"]
-        - 1
-    )
-
-    # Next CLOSE relative to current close
-    x["future_close_return"] = (
-        x["close"].shift(-1)
-        / x["close"]
-        - 1
-    )
-
-    # Compatibility name
-    x["future_return"] = (
-        x["future_close_return"]
-    )
-
-    x["future_close"] = (
+    next_close = (
         x["close"].shift(-1)
     )
+
+    x["target"] = (
+        next_close > next_open
+    ).astype(int)
 
     # =========================================================
     # CLEAN
