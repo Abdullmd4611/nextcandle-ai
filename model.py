@@ -5,7 +5,11 @@ from sklearn.ensemble import (
     HistGradientBoostingClassifier,
     HistGradientBoostingRegressor
 )
-from sklearn.metrics import accuracy_score, mean_absolute_error
+
+from sklearn.metrics import (
+    accuracy_score,
+    mean_absolute_error
+)
 
 
 # =========================================================
@@ -21,6 +25,7 @@ EXCLUDE = {
     "volume",
     "turnover",
 
+    # Future / target columns
     "target",
     "future_return",
     "future_close",
@@ -29,6 +34,7 @@ EXCLUDE = {
     "future_low_return",
     "future_close_return",
 
+    # Backtest-only columns
     "next_open",
     "next_close",
     "actual_direction",
@@ -55,11 +61,11 @@ def feature_columns(df):
 
 def _classifier(
     random_state=42,
-    max_iter=100,
+    max_iter=70,
     learning_rate=0.04,
-    max_leaf_nodes=12,
-    min_samples_leaf=25,
-    l2_regularization=1.5
+    max_leaf_nodes=10,
+    min_samples_leaf=30,
+    l2_regularization=2.0
 ):
 
     return HistGradientBoostingClassifier(
@@ -79,11 +85,11 @@ def _classifier(
 def _regressor():
 
     return HistGradientBoostingRegressor(
-        max_iter=100,
+        max_iter=70,
         learning_rate=0.04,
-        max_leaf_nodes=12,
-        min_samples_leaf=25,
-        l2_regularization=1.5,
+        max_leaf_nodes=10,
+        min_samples_leaf=30,
+        l2_regularization=2.0,
         random_state=42
     )
 
@@ -133,6 +139,10 @@ def train_model(df):
 
     data = df.copy()
 
+    # -----------------------------------------------------
+    # Future return
+    # -----------------------------------------------------
+
     data["future_return"] = (
         data["close"].shift(-1)
         / data["close"]
@@ -142,6 +152,10 @@ def train_model(df):
     data["future_close"] = (
         data["close"].shift(-1)
     )
+
+    # -----------------------------------------------------
+    # Clean data
+    # -----------------------------------------------------
 
     data = (
         data
@@ -168,19 +182,33 @@ def train_model(df):
 
     X = data[cols]
 
+    # -----------------------------------------------------
+    # Target
+    #
+    # -1 = bearish
+    #  0 = neutral
+    #  1 = bullish
+    # -----------------------------------------------------
+
     y_direction = (
         data["target"]
         .map({
             -1: 0,
-             0: 1,
-             1: 2
+            0: 1,
+            1: 2
         })
         .astype(int)
     )
 
     y_return = data["future_return"]
 
-    split = int(len(data) * 0.80)
+    # -----------------------------------------------------
+    # 80 / 20 holdout
+    # -----------------------------------------------------
+
+    split = int(
+        len(data) * 0.80
+    )
 
     X_train = X.iloc[:split]
     X_test = X.iloc[split:]
@@ -199,29 +227,29 @@ def train_model(df):
 
         _classifier(
             random_state=42,
-            max_iter=100,
+            max_iter=70,
             learning_rate=0.04,
-            max_leaf_nodes=12,
-            min_samples_leaf=25,
-            l2_regularization=1.5
-        ),
-
-        _classifier(
-            random_state=123,
-            max_iter=100,
-            learning_rate=0.03,
             max_leaf_nodes=10,
             min_samples_leaf=30,
             l2_regularization=2.0
         ),
 
         _classifier(
-            random_state=321,
-            max_iter=100,
-            learning_rate=0.05,
+            random_state=123,
+            max_iter=70,
+            learning_rate=0.035,
             max_leaf_nodes=10,
-            min_samples_leaf=20,
-            l2_regularization=1.0
+            min_samples_leaf=35,
+            l2_regularization=2.5
+        ),
+
+        _classifier(
+            random_state=321,
+            max_iter=70,
+            learning_rate=0.05,
+            max_leaf_nodes=8,
+            min_samples_leaf=30,
+            l2_regularization=2.0
         )
     ]
 
@@ -240,23 +268,56 @@ def train_model(df):
     # HOLDOUT TEST
     # =====================================================
 
-    test_probabilities = []
+    probability_arrays = []
 
     for model in classifiers:
 
-        test_probabilities.append(
+        probability_arrays.append(
             model.predict_proba(
                 X_test
             )
         )
 
-    avg_probabilities = np.mean(
-        test_probabilities,
-        axis=0
-    )
+    # =====================================================
+    # SAFE PROBABILITY AVERAGING
+    # =====================================================
+
+    class_probabilities = {
+        0: np.zeros(len(X_test)),
+        1: np.zeros(len(X_test)),
+        2: np.zeros(len(X_test))
+    }
+
+    for model, probabilities in zip(
+        classifiers,
+        probability_arrays
+    ):
+
+        for position, class_id in enumerate(
+            model.classes_
+        ):
+
+            class_probabilities[
+                int(class_id)
+            ] += probabilities[
+                :,
+                position
+            ]
+
+    for class_id in class_probabilities:
+
+        class_probabilities[
+            class_id
+        ] /= len(classifiers)
+
+    probability_matrix = np.column_stack([
+        class_probabilities[0],
+        class_probabilities[1],
+        class_probabilities[2]
+    ])
 
     pred = np.argmax(
-        avg_probabilities,
+        probability_matrix,
         axis=1
     )
 
@@ -327,13 +388,19 @@ def predict_next(
     threshold=0.65
 ):
 
-    latest = df[cols].iloc[[-1]]
+    latest = df[
+        cols
+    ].iloc[[-1]]
 
     if latest.isnull().any().any():
 
         raise ValueError(
             "Latest candle contains missing features."
         )
+
+    # =====================================================
+    # ENSEMBLE
+    # =====================================================
 
     probabilities = []
 
@@ -345,36 +412,54 @@ def predict_next(
             )[0]
         )
 
-    avg_probability = np.mean(
-        probabilities,
-        axis=0
-    )
+    # =====================================================
+    # SAFE AVERAGE
+    # =====================================================
 
-    mapping = {
-        int(k): float(v)
-        for k, v in zip(
-            models["classifiers"][0].classes_,
-            avg_probability
-        )
+    class_probabilities = {
+        0: 0.0,
+        1: 0.0,
+        2: 0.0
     }
+
+    for model, probability in zip(
+        models["classifiers"],
+        probabilities
+    ):
+
+        for position, class_id in enumerate(
+            model.classes_
+        ):
+
+            class_probabilities[
+                int(class_id)
+            ] += float(
+                probability[position]
+            )
+
+    for class_id in class_probabilities:
+
+        class_probabilities[
+            class_id
+        ] /= len(
+            models["classifiers"]
+        )
 
     probs = {
 
-        "bearish": mapping.get(
-            0,
-            0.0
-        ),
+        "bearish":
+            class_probabilities[0],
 
-        "neutral": mapping.get(
-            1,
-            0.0
-        ),
+        "neutral":
+            class_probabilities[1],
 
-        "bullish": mapping.get(
-            2,
-            0.0
-        )
+        "bullish":
+            class_probabilities[2]
     }
+
+    # =====================================================
+    # BEST DIRECTION
+    # =====================================================
 
     best = max(
         probs,
@@ -385,19 +470,9 @@ def predict_next(
         probs[best]
     )
 
-    individual_predictions = []
-
-    for model in models["classifiers"]:
-
-        p = model.predict_proba(
-            latest
-        )[0]
-
-        individual_predictions.append(
-            int(
-                np.argmax(p)
-            )
-        )
+    # =====================================================
+    # MODEL AGREEMENT
+    # =====================================================
 
     class_map = {
         "bearish": 0,
@@ -405,11 +480,27 @@ def predict_next(
         "bullish": 2
     }
 
+    individual_predictions = []
+
+    for model in models["classifiers"]:
+
+        prediction = model.predict(
+            latest
+        )[0]
+
+        individual_predictions.append(
+            int(prediction)
+        )
+
     agreement_count = (
         individual_predictions.count(
             class_map[best]
         )
     )
+
+    # =====================================================
+    # SIGNAL
+    # =====================================================
 
     if (
         confidence >= threshold
@@ -421,6 +512,10 @@ def predict_next(
     else:
 
         signal = "NO EDGE"
+
+    # =====================================================
+    # EXPECTED RETURN
+    # =====================================================
 
     predicted_return = float(
         models["regressor"].predict(
@@ -479,8 +574,12 @@ def walk_forward_backtest(
     )
 
     data["actual_direction"] = np.where(
-        data["next_close"] > data["next_open"],
+
+        data["next_close"]
+        > data["next_open"],
+
         "BULLISH",
+
         "BEARISH"
     )
 
@@ -504,19 +603,28 @@ def walk_forward_backtest(
         .reset_index(drop=True)
     )
 
-    if len(data) <= min_train + n_tests:
+    if len(data) <= (
+        min_train + n_tests
+    ):
 
         return _empty_backtest()
 
     # =====================================================
-    # TRAIN ON EVERYTHING BEFORE FINAL 80
+    # LAST 80 CANDLES
     # =====================================================
 
-    test_start = len(data) - n_tests
+    test_start = (
+        len(data)
+        - n_tests
+    )
 
-    train = data.iloc[:test_start].copy()
+    train = data.iloc[
+        :test_start
+    ].copy()
 
-    test = data.iloc[test_start:].copy()
+    test = data.iloc[
+        test_start:
+    ].copy()
 
     if len(train) < min_train:
 
@@ -530,8 +638,8 @@ def walk_forward_backtest(
         train["target"]
         .map({
             -1: 0,
-             0: 1,
-             1: 2
+            0: 1,
+            1: 2
         })
         .astype(int)
     )
@@ -541,36 +649,36 @@ def walk_forward_backtest(
         return _empty_backtest()
 
     # =====================================================
-    # THREE MODELS
+    # LIGHTWEIGHT ENSEMBLE
     # =====================================================
 
     classifiers = [
 
         _classifier(
             random_state=42,
-            max_iter=100,
+            max_iter=70,
             learning_rate=0.04,
-            max_leaf_nodes=12,
-            min_samples_leaf=25,
-            l2_regularization=1.5
-        ),
-
-        _classifier(
-            random_state=123,
-            max_iter=100,
-            learning_rate=0.03,
             max_leaf_nodes=10,
             min_samples_leaf=30,
             l2_regularization=2.0
         ),
 
         _classifier(
-            random_state=321,
-            max_iter=100,
-            learning_rate=0.05,
+            random_state=123,
+            max_iter=70,
+            learning_rate=0.035,
             max_leaf_nodes=10,
-            min_samples_leaf=20,
-            l2_regularization=1.0
+            min_samples_leaf=35,
+            l2_regularization=2.5
+        ),
+
+        _classifier(
+            random_state=321,
+            max_iter=70,
+            learning_rate=0.05,
+            max_leaf_nodes=8,
+            min_samples_leaf=30,
+            l2_regularization=2.0
         )
     ]
 
@@ -586,7 +694,7 @@ def walk_forward_backtest(
         )
 
     # =====================================================
-    # PREDICT ALL TEST CANDLES AT ONCE
+    # PREDICT ALL 80 AT ONCE
     # =====================================================
 
     probability_arrays = []
@@ -605,11 +713,14 @@ def walk_forward_backtest(
 
     class_probabilities = {
 
-        0: np.zeros(len(test)),
+        0:
+            np.zeros(len(test)),
 
-        1: np.zeros(len(test)),
+        1:
+            np.zeros(len(test)),
 
-        2: np.zeros(len(test))
+        2:
+            np.zeros(len(test))
     }
 
     for model, probabilities in zip(
@@ -635,7 +746,7 @@ def walk_forward_backtest(
         ] /= len(classifiers)
 
     # =====================================================
-    # PREDICTED CLASS
+    # FINAL PREDICTIONS
     # =====================================================
 
     probability_matrix = np.column_stack([
@@ -658,7 +769,7 @@ def walk_forward_backtest(
     )
 
     # =====================================================
-    # MODEL AGREEMENT
+    # INDIVIDUAL MODEL PREDICTIONS
     # =====================================================
 
     individual_predictions = []
@@ -672,22 +783,25 @@ def walk_forward_backtest(
         )
 
     # =====================================================
-    # DIRECTIONS
+    # DIRECTION MAP
     # =====================================================
 
     class_to_direction = {
 
-        0: "BEARISH",
+        0:
+            "BEARISH",
 
-        1: "NEUTRAL",
+        1:
+            "NEUTRAL",
 
-        2: "BULLISH"
+        2:
+            "BULLISH"
     }
 
     results = []
 
     # =====================================================
-    # BUILD 80 RESULTS
+    # BUILD TEST RESULTS
     # =====================================================
 
     for position in range(
@@ -700,9 +814,11 @@ def walk_forward_backtest(
             ]
         )
 
-        prediction = class_to_direction[
-            predicted_class
-        ]
+        prediction = (
+            class_to_direction[
+                predicted_class
+            ]
+        )
 
         confidence = float(
             confidence_values[
@@ -728,6 +844,10 @@ def walk_forward_backtest(
             ][position]
         )
 
+        # -------------------------------------------------
+        # MODEL AGREEMENT
+        # -------------------------------------------------
+
         agreement_count = sum(
 
             pred[position]
@@ -736,6 +856,10 @@ def walk_forward_backtest(
             for pred
             in individual_predictions
         )
+
+        # -------------------------------------------------
+        # SIGNAL
+        # -------------------------------------------------
 
         if (
             confidence >= signal_threshold
@@ -748,11 +872,19 @@ def walk_forward_backtest(
 
             signal = "NO EDGE"
 
+        # -------------------------------------------------
+        # ACTUAL
+        # -------------------------------------------------
+
         actual = str(
             test[
                 "actual_direction"
             ].iloc[position]
         )
+
+        # -------------------------------------------------
+        # CORRECT
+        # -------------------------------------------------
 
         correct = (
             prediction == actual
@@ -762,6 +894,10 @@ def walk_forward_backtest(
             signal != "NO EDGE"
             and signal == actual
         )
+
+        # -------------------------------------------------
+        # SAVE
+        # -------------------------------------------------
 
         results.append({
 
@@ -821,19 +957,19 @@ def walk_forward_backtest(
         })
 
     # =====================================================
-    # RESULTS
+    # NO RESULTS
     # =====================================================
+
+    if not results:
+
+        return _empty_backtest()
 
     result_df = pd.DataFrame(
         results
     )
 
-    if result_df.empty:
-
-        return _empty_backtest()
-
     # =====================================================
-    # OVERALL
+    # OVERALL RESULTS
     # =====================================================
 
     correct_count = int(
@@ -854,7 +990,7 @@ def walk_forward_backtest(
     )
 
     # =====================================================
-    # SIGNALS
+    # SIGNAL RESULTS
     # =====================================================
 
     signal_df = result_df[
@@ -885,18 +1021,17 @@ def walk_forward_backtest(
         ] == "BULLISH"
     ]
 
-    bullish_accuracy = (
+    if len(bullish_df) > 0:
 
-        float(
+        bullish_accuracy = float(
             bullish_df[
                 "correct"
             ].mean()
         )
 
-        if len(bullish_df) > 0
+    else:
 
-        else 0.0
-    )
+        bullish_accuracy = 0.0
 
     # =====================================================
     # BEARISH
@@ -908,18 +1043,17 @@ def walk_forward_backtest(
         ] == "BEARISH"
     ]
 
-    bearish_accuracy = (
+    if len(bearish_df) > 0:
 
-        float(
+        bearish_accuracy = float(
             bearish_df[
                 "correct"
             ].mean()
         )
 
-        if len(bearish_df) > 0
+    else:
 
-        else 0.0
-    )
+        bearish_accuracy = 0.0
 
     # =====================================================
     # NEUTRAL
@@ -931,18 +1065,17 @@ def walk_forward_backtest(
         ] == "NEUTRAL"
     ]
 
-    neutral_accuracy = (
+    if len(neutral_df) > 0:
 
-        float(
+        neutral_accuracy = float(
             neutral_df[
                 "correct"
             ].mean()
         )
 
-        if len(neutral_df) > 0
+    else:
 
-        else 0.0
-    )
+        neutral_accuracy = 0.0
 
     # =====================================================
     # RETURN
