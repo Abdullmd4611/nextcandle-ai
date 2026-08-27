@@ -29,8 +29,8 @@ st.set_page_config(
 st.title("📈 NextCandle AI — V7")
 
 st.caption(
-    "Predict the direction of the NEXT 15-minute candle "
-    "using completed historical information."
+    "Analyze the NEXT 15-minute candle using completed "
+    "historical market information."
 )
 
 
@@ -38,7 +38,7 @@ st.caption(
 # SETTINGS
 # =========================================================
 
-st.sidebar.header("⚙️ V7 SETTINGS")
+st.sidebar.header("⚙️ SETTINGS")
 
 symbol = st.sidebar.text_input(
     "Trading pair",
@@ -63,14 +63,15 @@ threshold = st.sidebar.slider(
 
 
 # =========================================================
-# FIXED TEST SETTINGS
+# TEST SETTINGS
 # =========================================================
 
 TEST_COUNT = 80
 MIN_TRAIN = 1000
 
 st.sidebar.info(
-    "🎯 V7 will test exactly 80 historical candles."
+    "🎯 The system will test exactly 80 historical "
+    "15-minute candles."
 )
 
 
@@ -79,7 +80,7 @@ st.sidebar.info(
 # =========================================================
 
 run_test = st.sidebar.button(
-    "🚀 RUN V7 TEST",
+    "🚀 RUN 80-CANDLE TEST",
     key="run_v7_test",
     type="primary",
     use_container_width=True
@@ -90,41 +91,51 @@ run_test = st.sidebar.button(
 # INITIAL SCREEN
 # =========================================================
 
-if not run_test and "result" not in st.session_state:
+if (
+    not run_test
+    and "result" not in st.session_state
+):
 
     st.info(
-        "👈 Select your settings on the left, "
-        "then press **🚀 RUN V7 TEST**."
+        "👈 Select your settings and press "
+        "**🚀 RUN 80-CANDLE TEST**."
     )
 
     st.subheader(
-        "🎯 What we are testing"
+        "🎯 What this test does"
     )
 
     st.write(
-        "V7 will make 80 historical predictions."
+        "The system examines historical ACEUSDT "
+        "15-minute candles."
     )
 
     st.write(
-        "For each test, it predicts the direction "
-        "of the next 15-minute candle."
+        "It makes a direction decision for the "
+        "next 15-minute candle."
     )
 
     st.write(
-        "We then compare the prediction with what "
-        "the actual next candle did."
+        "The prediction is then compared with what "
+        "the next candle actually did."
     )
 
     st.write(
-        "The goal is to determine whether V7 has "
-        "a genuine predictive edge before we build V8."
+        "The final 80 candles are kept outside the "
+        "training data so they can be used as an "
+        "unseen historical test."
+    )
+
+    st.warning(
+        "⚠️ Historical results do not guarantee "
+        "future trading performance."
     )
 
     st.stop()
 
 
 # =========================================================
-# RUN V7
+# RUN TEST
 # =========================================================
 
 if run_test:
@@ -132,13 +143,14 @@ if run_test:
     try:
 
         # Clear previous result
+
         st.session_state.pop(
             "result",
             None
         )
 
         # =================================================
-        # STEP 1
+        # STEP 1 — MARKET DATA
         # =================================================
 
         with st.status(
@@ -156,16 +168,23 @@ if run_test:
                 history
             )
 
-            if raw_15m is None or len(raw_15m) == 0:
+            if (
+                raw_15m is None
+                or len(raw_15m) == 0
+            ):
 
                 raise ValueError(
                     "MEXC returned no 15M candles."
                 )
 
             st.write(
-                f"✅ Received {len(raw_15m):,} 15M candles."
+                f"✅ Received "
+                f"{len(raw_15m):,} 15M candles."
             )
 
+            # ---------------------------------------------
+            # 4H DATA
+            # ---------------------------------------------
 
             st.write(
                 "Downloading completed 4H candles..."
@@ -177,14 +196,18 @@ if run_test:
                 500
             )
 
-            if raw_4h is None or len(raw_4h) == 0:
+            if (
+                raw_4h is None
+                or len(raw_4h) == 0
+            ):
 
                 raise ValueError(
                     "MEXC returned no 4H candles."
                 )
 
             st.write(
-                f"✅ Received {len(raw_4h):,} 4H candles."
+                f"✅ Received "
+                f"{len(raw_4h):,} 4H candles."
             )
 
             status.update(
@@ -194,7 +217,7 @@ if run_test:
 
 
         # =================================================
-        # STEP 2
+        # STEP 2 — FEATURES
         # =================================================
 
         with st.status(
@@ -207,11 +230,16 @@ if run_test:
                 raw_4h
             )
 
-            if df is None or len(df) < 700:
+            if (
+                df is None
+                or len(df) < 700
+            ):
 
                 raise ValueError(
-                    f"Not enough clean candles. "
-                    f"Only {0 if df is None else len(df)} available."
+                    "Not enough clean candles. "
+                    f"Only "
+                    f"{0 if df is None else len(df)} "
+                    f"available."
                 )
 
             st.write(
@@ -226,11 +254,11 @@ if run_test:
 
 
         # =================================================
-        # STEP 3
+        # STEP 3 — TRAIN LIVE MODEL
         # =================================================
 
         with st.status(
-            "🤖 Training V7...",
+            "🤖 Training AI model...",
             expanded=True
         ) as status:
 
@@ -239,7 +267,9 @@ if run_test:
             )
 
             st.write(
-                f"✅ Using {len(feature_cols)} model features."
+                f"✅ Using "
+                f"{len(feature_cols)} "
+                f"model features."
             )
 
             st.write(
@@ -251,17 +281,17 @@ if run_test:
             )
 
             status.update(
-                label="✅ V7 model trained",
+                label="✅ AI model trained",
                 state="complete"
             )
 
 
         # =================================================
-        # STEP 4
+        # STEP 4 — CURRENT NEXT CANDLE
         # =================================================
 
         with st.status(
-            "🎯 Predicting the next 15M candle...",
+            "🎯 Analyzing the next 15M candle...",
             expanded=True
         ) as status:
 
@@ -279,24 +309,33 @@ if run_test:
             )
 
             status.update(
-                label="✅ Live prediction ready",
+                label="✅ Current analysis ready",
                 state="complete"
             )
 
 
         # =================================================
-        # STEP 5
+        # STEP 5 — 80 CANDLE TEST
         # =================================================
 
         with st.status(
-            "🔄 Running the 80-candle historical test...",
+            "🧪 Running 80-candle historical test...",
             expanded=True
         ) as status:
 
             st.write(
-                "This may take some time because V7 "
-                "is retrained at each historical test point."
+                "Training the test model once, then "
+                "checking the final 80 unseen candles."
             )
+
+            progress_text = st.empty()
+
+            progress_bar = st.progress(
+                0
+            )
+
+            # The backtest itself is optimized and
+            # processes the test window in one operation.
 
             bt = walk_forward_backtest(
                 df,
@@ -306,13 +345,21 @@ if run_test:
                 signal_threshold=threshold
             )
 
-            completed = bt.get(
-                "predictions",
-                0
+            completed = int(
+                bt.get(
+                    "predictions",
+                    0
+                )
             )
 
-            st.write(
-                f"✅ Completed {completed} historical tests."
+            progress_bar.progress(
+                100
+            )
+
+            progress_text.write(
+                f"✅ Completed "
+                f"{completed}/{TEST_COUNT} "
+                f"historical tests."
             )
 
             status.update(
@@ -322,30 +369,50 @@ if run_test:
 
 
         # =================================================
-        # SAVE
+        # SAVE RESULT
         # =================================================
 
         st.session_state.result = {
-            "df": df,
-            "probs": probs,
-            "signal": ml_signal,
-            "expected_open": expected_open,
-            "predicted_close": predicted_close,
-            "expected_move_pct": expected_move_pct,
-            "metrics": metrics,
-            "bt": bt,
-            "symbol": symbol,
-            "threshold": threshold
+
+            "df":
+                df,
+
+            "probs":
+                probs,
+
+            "signal":
+                ml_signal,
+
+            "expected_open":
+                expected_open,
+
+            "predicted_close":
+                predicted_close,
+
+            "expected_move_pct":
+                expected_move_pct,
+
+            "metrics":
+                metrics,
+
+            "bt":
+                bt,
+
+            "symbol":
+                symbol,
+
+            "threshold":
+                threshold
         }
 
         st.success(
-            "🎉 V7 test completed successfully!"
+            "🎉 80-candle test completed successfully!"
         )
 
     except Exception as e:
 
         st.error(
-            f"❌ V7 test failed: {e}"
+            f"❌ Test failed: {e}"
         )
 
         st.exception(e)
@@ -354,7 +421,7 @@ if run_test:
 
 
 # =========================================================
-# LOAD SAVED RESULT
+# LOAD RESULT
 # =========================================================
 
 if "result" not in st.session_state:
@@ -365,16 +432,29 @@ if "result" not in st.session_state:
 result = st.session_state.result
 
 df = result["df"]
+
 probs = result["probs"]
+
 ml_signal = result["signal"]
+
 expected_open = result["expected_open"]
+
 predicted_close = result["predicted_close"]
+
 expected_move_pct = result["expected_move_pct"]
+
 metrics = result["metrics"]
+
 bt = result["bt"]
+
 symbol = result["symbol"]
+
 threshold = result["threshold"]
 
+
+# =========================================================
+# LATEST CANDLE
+# =========================================================
 
 latest = df.iloc[-1]
 
@@ -405,21 +485,24 @@ if pd.isna(htf_score):
 if htf_score >= 2:
 
     htf_bias = "BULLISH"
+
     htf_icon = "🟢"
 
 elif htf_score <= -2:
 
     htf_bias = "BEARISH"
+
     htf_icon = "🔴"
 
 else:
 
     htf_bias = "NEUTRAL"
+
     htf_icon = "⚪"
 
 
 # =========================================================
-# NEXT CANDLE
+# NEXT 15M CANDLE
 # =========================================================
 
 st.divider()
@@ -443,21 +526,24 @@ if ml_signal == "BULLISH":
 
     st.success(
         f"🟢 NEXT 15M CANDLE: BULLISH\n\n"
-        f"Confidence: {confidence * 100:.1f}%"
+        f"Confidence: "
+        f"{confidence * 100:.1f}%"
     )
 
 elif ml_signal == "BEARISH":
 
     st.error(
         f"🔴 NEXT 15M CANDLE: BEARISH\n\n"
-        f"Confidence: {confidence * 100:.1f}%"
+        f"Confidence: "
+        f"{confidence * 100:.1f}%"
     )
 
 else:
 
     st.warning(
         f"⚪ NEXT 15M CANDLE: NO EDGE\n\n"
-        f"Highest probability: {confidence * 100:.1f}%"
+        f"Highest probability: "
+        f"{confidence * 100:.1f}%"
     )
 
 
@@ -471,6 +557,7 @@ st.subheader(
 
 p1, p2, p3 = st.columns(3)
 
+
 with p1:
 
     st.metric(
@@ -478,12 +565,14 @@ with p1:
         f"{probs['bullish'] * 100:.2f}%"
     )
 
+
 with p2:
 
     st.metric(
         "⚪ NEUTRAL",
         f"{probs['neutral'] * 100:.2f}%"
     )
+
 
 with p3:
 
@@ -494,7 +583,7 @@ with p3:
 
 
 # =========================================================
-# PRICE
+# PRICE ESTIMATE
 # =========================================================
 
 st.divider()
@@ -505,12 +594,14 @@ st.subheader(
 
 q1, q2, q3 = st.columns(3)
 
+
 with q1:
 
     st.metric(
         "Current Price",
         f"{current_close:.8f}"
     )
+
 
 with q2:
 
@@ -519,6 +610,7 @@ with q2:
         f"{predicted_close:.8f}",
         delta=f"{expected_move_pct:+.3f}%"
     )
+
 
 with q3:
 
@@ -529,7 +621,7 @@ with q3:
 
 
 # =========================================================
-# 4H
+# 4H CONTEXT
 # =========================================================
 
 st.divider()
@@ -540,12 +632,14 @@ st.subheader(
 
 c1, c2 = st.columns(2)
 
+
 with c1:
 
     st.metric(
         "4H Bias",
         f"{htf_icon} {htf_bias}"
     )
+
 
 with c2:
 
@@ -562,10 +656,11 @@ with c2:
 st.divider()
 
 st.header(
-    "🧪 V7 VALIDATION"
+    "🧪 MODEL VALIDATION"
 )
 
 v1, v2, v3, v4 = st.columns(4)
+
 
 with v1:
 
@@ -574,6 +669,7 @@ with v1:
         f"{metrics.get('holdout_accuracy', 0) * 100:.2f}%"
     )
 
+
 with v2:
 
     st.metric(
@@ -581,23 +677,30 @@ with v2:
         f"{bt.get('accuracy', 0) * 100:.2f}%"
     )
 
+
 with v3:
 
     st.metric(
-        "High-Confidence Accuracy",
+        "Signal Accuracy",
         f"{bt.get('signal_accuracy', 0) * 100:.2f}%"
     )
+
 
 with v4:
 
     st.metric(
         "Tests Completed",
-        str(bt.get("predictions", 0))
+        str(
+            bt.get(
+                "predictions",
+                0
+            )
+        )
     )
 
 
 # =========================================================
-# REAL TEST RESULT
+# 80 TEST RESULT
 # =========================================================
 
 st.divider()
@@ -607,25 +710,39 @@ st.header(
 )
 
 predictions_done = int(
-    bt.get("predictions", 0)
-)
-
-accuracy = float(
-    bt.get("accuracy", 0)
-)
-
-correct = int(
-    round(
-        predictions_done * accuracy
+    bt.get(
+        "predictions",
+        0
     )
 )
 
-wrong = (
-    predictions_done - correct
+accuracy = float(
+    bt.get(
+        "accuracy",
+        0
+    )
+)
+
+correct = int(
+    bt.get(
+        "correct",
+        round(
+            predictions_done
+            * accuracy
+        )
+    )
+)
+
+wrong = int(
+    bt.get(
+        "wrong",
+        predictions_done - correct
+    )
 )
 
 
 r1, r2, r3 = st.columns(3)
+
 
 with r1:
 
@@ -634,12 +751,14 @@ with r1:
         predictions_done
     )
 
+
 with r2:
 
     st.metric(
         "Correct",
         correct
     )
+
 
 with r3:
 
@@ -659,32 +778,35 @@ st.metric(
 # VERDICT
 # =========================================================
 
-if predictions_done >= 80:
+if predictions_done >= TEST_COUNT:
 
     if accuracy >= 0.70:
 
         st.success(
-            "🟢 V7 PASSED our 70% target."
+            "🟢 The model reached the 70% "
+            "historical accuracy target."
         )
 
     elif accuracy >= 0.55:
 
         st.warning(
-            "🟡 V7 is above the 50% baseline, "
-            "but has not reached our 70% target."
+            "🟡 The model is above the "
+            "50% baseline but below the "
+            "70% target."
         )
 
     else:
 
         st.error(
-            "🔴 V7 FAILED this test."
+            "🔴 The model did not reach "
+            "the required target."
         )
 
 else:
 
     st.warning(
         f"Only {predictions_done} tests completed. "
-        "We need 80 before judging V7."
+        f"We need {TEST_COUNT} before judging the result."
     )
 
 
@@ -700,39 +822,57 @@ st.subheader(
 
 b1, b2, b3 = st.columns(3)
 
+
 with b1:
 
     st.metric(
         "🟢 Bullish Tests",
-        int(bt.get("bullish_signals", 0))
+        int(
+            bt.get(
+                "bullish_signals",
+                0
+            )
+        )
     )
 
     st.write(
-        f"Accuracy: "
+        "Accuracy: "
         f"{float(bt.get('bullish_accuracy', 0)) * 100:.2f}%"
     )
+
 
 with b2:
 
     st.metric(
         "🔴 Bearish Tests",
-        int(bt.get("bearish_signals", 0))
+        int(
+            bt.get(
+                "bearish_signals",
+                0
+            )
+        )
     )
 
     st.write(
-        f"Accuracy: "
+        "Accuracy: "
         f"{float(bt.get('bearish_accuracy', 0)) * 100:.2f}%"
     )
+
 
 with b3:
 
     st.metric(
         "⚪ Neutral Tests",
-        int(bt.get("neutral_signals", 0))
+        int(
+            bt.get(
+                "neutral_signals",
+                0
+            )
+        )
     )
 
     st.write(
-        f"Accuracy: "
+        "Accuracy: "
         f"{float(bt.get('neutral_accuracy', 0)) * 100:.2f}%"
     )
 
@@ -748,16 +888,20 @@ st.subheader(
 )
 
 st.write(
-    f"Signals: **{int(bt.get('signals', 0))}**"
+    f"Signals: **"
+    f"{int(bt.get('signals', 0))}"
+    f"**"
 )
 
 st.write(
-    f"Accuracy: "
-    f"**{float(bt.get('signal_accuracy', 0)) * 100:.2f}%**"
+    "Accuracy: **"
+    f"{float(bt.get('signal_accuracy', 0)) * 100:.2f}%"
+    "**"
 )
 
 st.caption(
-    f"Minimum confidence: {threshold * 100:.0f}%"
+    f"Minimum confidence: "
+    f"{threshold * 100:.0f}%"
 )
 
 
@@ -784,24 +928,26 @@ if test_results:
 
     if "correct" in test_df.columns:
 
-        test_df["correct"] = test_df[
-            "correct"
-        ].map(
-            {
-                True: "✅ CORRECT",
-                False: "❌ WRONG"
-            }
+        test_df["correct"] = (
+            test_df["correct"]
+            .map(
+                {
+                    True: "✅ CORRECT",
+                    False: "❌ WRONG"
+                }
+            )
         )
 
     if "signal_correct" in test_df.columns:
 
-        test_df["signal_correct"] = test_df[
-            "signal_correct"
-        ].map(
-            {
-                True: "✅",
-                False: "❌"
-            }
+        test_df["signal_correct"] = (
+            test_df["signal_correct"]
+            .map(
+                {
+                    True: "✅",
+                    False: "❌"
+                }
+            )
         )
 
     st.dataframe(
@@ -837,30 +983,30 @@ display_columns = [
 ]
 
 available_columns = [
-    c
-    for c in display_columns
-    if c in df.columns
+    column
+    for column in display_columns
+    if column in df.columns
 ]
 
 st.dataframe(
-    df[available_columns].tail(20),
+    df[
+        available_columns
+    ].tail(20),
     use_container_width=True
 )
 
 
 # =========================================================
-# FINAL MESSAGE
+# FINAL
 # =========================================================
 
 st.divider()
 
 st.info(
-    "🧠 Do not move to V8 yet. "
-    "First we need to examine whether V7's 80 historical "
-    "predictions genuinely match the direction of the "
-    "next 15M candles."
+    "🧠 Do not move to another version yet. "
+    "First examine the 80 historical results and "
+    "determine whether the system genuinely has an edge."
 )
-
 
 st.caption(
     "Research/paper-trading only. "
