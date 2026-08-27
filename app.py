@@ -3,14 +3,11 @@ import pandas as pd
 
 from data import fetch_klines
 from features import make_features
-from model import (
-    train_model,
-    predict_next
-)
+from model import train_model, predict_next
 
 
 # =========================================================
-# PAGE
+# PAGE CONFIG
 # =========================================================
 
 st.set_page_config(
@@ -27,8 +24,7 @@ st.set_page_config(
 st.title("📈 NextCandle AI")
 
 st.caption(
-    "15-minute market analysis using completed candles "
-    "and higher-timeframe market context."
+    "AI market-direction analysis for the next completed 15-minute candle."
 )
 
 
@@ -36,9 +32,7 @@ st.caption(
 # SIDEBAR
 # =========================================================
 
-st.sidebar.header(
-    "⚙️ SETTINGS"
-)
+st.sidebar.header("⚙️ SETTINGS")
 
 symbol = st.sidebar.text_input(
     "Trading Pair",
@@ -61,7 +55,7 @@ run_analysis = st.sidebar.button(
 
 
 # =========================================================
-# INITIAL SCREEN
+# START SCREEN
 # =========================================================
 
 if (
@@ -70,30 +64,24 @@ if (
 ):
 
     st.info(
-        "👈 Choose your trading pair and press "
+        "👈 Select your pair and press "
         "**🚀 RUN ANALYSIS**."
     )
 
-    st.subheader(
-        "🎯 What this version does"
+    st.subheader("🎯 How it works")
+
+    st.write(
+        "The app uses completed 15-minute candles."
     )
 
     st.write(
-        "The system analyzes completed 15-minute candles."
+        "It analyzes price action, trend, momentum, "
+        "volatility, volume and completed 4H context."
     )
 
     st.write(
-        "It also uses completed 4-hour market context."
-    )
-
-    st.write(
-        "It then estimates whether the NEXT 15-minute "
-        "candle is more likely to be bullish or bearish."
-    )
-
-    st.warning(
-        "This is an analysis tool, not a guarantee of "
-        "future price movement."
+        "It then gives the most likely direction "
+        "for the next 15-minute candle."
     )
 
     st.stop()
@@ -107,9 +95,9 @@ if run_analysis:
 
     try:
 
-        # =================================================
+        # -------------------------------------------------
         # DOWNLOAD 15M
-        # =================================================
+        # -------------------------------------------------
 
         with st.spinner(
             "📥 Downloading completed 15M candles..."
@@ -121,15 +109,16 @@ if run_analysis:
                 history
             )
 
-        if raw_15m is None or len(raw_15m) == 0:
+        if raw_15m is None or len(raw_15m) < 500:
 
             raise ValueError(
-                "No 15M market data returned."
+                "Not enough 15M candle data returned."
             )
 
-        # =================================================
+
+        # -------------------------------------------------
         # DOWNLOAD 4H
-        # =================================================
+        # -------------------------------------------------
 
         with st.spinner(
             "📥 Downloading completed 4H candles..."
@@ -141,15 +130,16 @@ if run_analysis:
                 300
             )
 
-        if raw_4h is None or len(raw_4h) == 0:
+        if raw_4h is None or len(raw_4h) < 50:
 
             raise ValueError(
-                "No 4H market data returned."
+                "Not enough 4H candle data returned."
             )
 
-        # =================================================
+
+        # -------------------------------------------------
         # FEATURES
-        # =================================================
+        # -------------------------------------------------
 
         with st.spinner(
             "🧮 Analyzing market structure..."
@@ -160,28 +150,30 @@ if run_analysis:
                 raw_4h
             )
 
+
         if df is None or len(df) < 500:
 
             raise ValueError(
-                f"Not enough usable data after feature "
-                f"calculation. Only {len(df)} candles."
+                "Not enough usable data after feature calculation."
             )
 
-        # =================================================
+
+        # -------------------------------------------------
         # TRAIN
-        # =================================================
+        # -------------------------------------------------
 
         with st.spinner(
             "🤖 Running AI analysis..."
         ):
 
-            models, feature_cols, metrics = (
-                train_model(df)
+            models, feature_cols, metrics = train_model(
+                df
             )
 
-        # =================================================
+
+        # -------------------------------------------------
         # NEXT CANDLE
-        # =================================================
+        # -------------------------------------------------
 
         result = predict_next(
             models,
@@ -189,9 +181,10 @@ if run_analysis:
             feature_cols
         )
 
-        # =================================================
+
+        # -------------------------------------------------
         # SAVE
-        # =================================================
+        # -------------------------------------------------
 
         st.session_state.analysis_result = {
 
@@ -203,9 +196,9 @@ if run_analysis:
 
             "metrics": metrics,
 
-            "feature_count":
-                len(feature_cols)
+            "feature_count": len(feature_cols)
         }
+
 
     except Exception as e:
 
@@ -222,17 +215,20 @@ if run_analysis:
 # LOAD RESULT
 # =========================================================
 
-result_data = (
-    st.session_state.analysis_result
-)
+if "analysis_result" not in st.session_state:
 
-symbol = result_data["symbol"]
+    st.stop()
 
-df = result_data["df"]
 
-result = result_data["result"]
+saved = st.session_state.analysis_result
 
-metrics = result_data["metrics"]
+symbol = saved["symbol"]
+
+df = saved["df"]
+
+result = saved["result"]
+
+metrics = saved["metrics"]
 
 
 latest = df.iloc[-1]
@@ -255,35 +251,35 @@ st.header(
 
 direction = result["direction"]
 
-confidence = (
+confidence = float(
     result["confidence"]
 )
 
-bullish_probability = (
+bullish_probability = float(
     result["bullish_probability"]
 )
 
-bearish_probability = (
+bearish_probability = float(
     result["bearish_probability"]
 )
 
 
 # =========================================================
-# BIG DIRECTION
+# DIRECTION
 # =========================================================
 
 if direction == "BULLISH":
 
     st.success(
         f"🟢 NEXT 15M CANDLE: BULLISH\n\n"
-        f"Confidence: {confidence * 100:.1f}%"
+        f"Model confidence: {confidence * 100:.1f}%"
     )
 
 else:
 
     st.error(
         f"🔴 NEXT 15M CANDLE: BEARISH\n\n"
-        f"Confidence: {confidence * 100:.1f}%"
+        f"Model confidence: {confidence * 100:.1f}%"
     )
 
 
@@ -292,7 +288,7 @@ else:
 # =========================================================
 
 st.subheader(
-    "🤖 AI Direction"
+    "🤖 Direction"
 )
 
 c1, c2 = st.columns(2)
@@ -419,7 +415,7 @@ with i2:
 
     st.metric(
         "Model Features",
-        metrics["features"]
+        saved["feature_count"]
     )
 
 with i3:
@@ -450,8 +446,7 @@ display_columns = [
 ]
 
 available = [
-    c
-    for c in display_columns
+    c for c in display_columns
     if c in df.columns
 ]
 
@@ -468,7 +463,7 @@ st.dataframe(
 st.divider()
 
 st.caption(
-    "⚠️ The result is a statistical model output, "
-    "not a guarantee. Always validate the system "
-    "before using real capital."
+    "⚠️ This is a statistical market-analysis system. "
+    "It does not guarantee the direction or profitability "
+    "of any future candle."
 )
