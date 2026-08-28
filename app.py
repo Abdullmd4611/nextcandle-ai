@@ -1,202 +1,404 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
-from data import fetch_klines
-from features import make_features
-from model import train_model, predict_next
+from data import fetch_klines, get_latest_price
+from features import prepare_training_data
+from model import NextCandleModel
 
 
-# =========================================================
-# PAGE CONFIG
-# =========================================================
+# ============================================================
+# NEXTCANDLE AI V2
+# Bybit CYSUSDT Perpetual
+# Primary prediction: next 15-minute candle
+# Higher timeframe: completed 4-hour context
+# ============================================================
+
 
 st.set_page_config(
-    page_title="NextCandle AI",
+    page_title="NextCandle AI V2",
     page_icon="📈",
-    layout="wide"
+    layout="wide",
 )
 
 
-# =========================================================
-# TITLE
-# =========================================================
+# ============================================================
+# CONSTANTS
+# ============================================================
 
-st.title("📈 NextCandle AI")
+DEFAULT_SYMBOL = "CYSUSDT"
+
+PRIMARY_INTERVAL = "Min15"
+HIGHER_INTERVAL = "Hour4"
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.title("📈 NextCandle AI V2")
 
 st.caption(
-    "AI market-direction analysis for the next completed 15-minute candle."
+    "Bybit CYSUSDT perpetual • "
+    "Next 15-minute candle analysis"
 )
 
 
-# =========================================================
+# ============================================================
 # SIDEBAR
-# =========================================================
+# ============================================================
 
-st.sidebar.header("⚙️ SETTINGS")
+st.sidebar.header("⚙️ MARKET SETTINGS")
 
 symbol = st.sidebar.text_input(
-    "Trading Pair",
-    value="ACE_USDT"
+    "Bybit Perpetual Symbol",
+    value=DEFAULT_SYMBOL,
 ).upper().strip()
 
+
 history = st.sidebar.slider(
-    "Historical 15M Candles",
+    "15M Historical Candles",
     min_value=1000,
     max_value=5000,
     value=2500,
-    step=500
+    step=500,
 )
+
+
+neutral_threshold_pct = st.sidebar.slider(
+    "Neutral Threshold (%)",
+    min_value=0.05,
+    max_value=0.50,
+    value=0.15,
+    step=0.05,
+)
+
+
+confidence_threshold = st.sidebar.slider(
+    "Minimum Confidence (%)",
+    min_value=50,
+    max_value=90,
+    value=55,
+    step=1,
+)
+
+
+edge_threshold = st.sidebar.slider(
+    "Minimum Probability Edge (%)",
+    min_value=5,
+    max_value=40,
+    value=10,
+    step=1,
+)
+
 
 run_analysis = st.sidebar.button(
     "🚀 RUN ANALYSIS",
     type="primary",
-    use_container_width=True
+    use_container_width=True,
 )
 
 
-# =========================================================
-# START SCREEN
-# =========================================================
+# ============================================================
+# INTRO
+# ============================================================
 
 if (
-    not run_analysis
-    and "analysis_result" not in st.session_state
+    st.session_state.analysis_result is None
+    and not run_analysis
 ):
 
     st.info(
-        "👈 Select your pair and press "
+        "Select the market settings and press "
         "**🚀 RUN ANALYSIS**."
     )
 
-    st.subheader("🎯 How it works")
+    st.subheader("🧠 What this system does")
 
     st.write(
-        "The app uses completed 15-minute candles."
+        "• Uses Bybit perpetual-market data."
     )
 
     st.write(
-        "It analyzes price action, trend, momentum, "
-        "volatility, volume and completed 4H context."
+        "• Uses completed 15-minute candles."
     )
 
     st.write(
-        "It then gives the most likely direction "
-        "for the next 15-minute candle."
+        "• Uses completed 4-hour candles as "
+        "higher-timeframe context."
+    )
+
+    st.write(
+        "• Learns three outcomes: "
+        "BEARISH, NEUTRAL and BULLISH."
+    )
+
+    st.write(
+        "• Refuses weak predictions instead of "
+        "forcing a BUY/SELL direction."
+    )
+
+    st.warning(
+        "This is a statistical prediction system. "
+        "No model can guarantee the next candle."
     )
 
     st.stop()
 
 
-# =========================================================
-# RUN ANALYSIS
-# =========================================================
+# ============================================================
+# ANALYSIS
+# ============================================================
 
 if run_analysis:
 
     try:
 
-        # -------------------------------------------------
-        # DOWNLOAD 15M
-        # -------------------------------------------------
+        # ----------------------------------------------------
+        # VALIDATE SYMBOL
+        # ----------------------------------------------------
+
+        if not symbol:
+
+            raise ValueError(
+                "Please enter a Bybit symbol."
+            )
+
+
+        # ----------------------------------------------------
+        # DOWNLOAD 15M DATA
+        # ----------------------------------------------------
 
         with st.spinner(
-            "📥 Downloading completed 15M candles..."
+            "📥 Downloading completed Bybit 15M candles..."
         ):
 
             raw_15m = fetch_klines(
-                symbol,
-                "Min15",
-                history
+                symbol=symbol,
+                interval=PRIMARY_INTERVAL,
+                total=history,
             )
 
-        if raw_15m is None or len(raw_15m) < 500:
+
+        if (
+            raw_15m is None
+            or len(raw_15m) < 500
+        ):
 
             raise ValueError(
-                "Not enough 15M candle data returned."
+                "Not enough completed 15M candles."
             )
 
 
-        # -------------------------------------------------
-        # DOWNLOAD 4H
-        # -------------------------------------------------
+        # ----------------------------------------------------
+        # DOWNLOAD 4H DATA
+        # ----------------------------------------------------
 
         with st.spinner(
-            "📥 Downloading completed 4H candles..."
+            "📥 Downloading completed Bybit 4H candles..."
         ):
 
             raw_4h = fetch_klines(
-                symbol,
-                "Hour4",
-                300
-            )
-
-        if raw_4h is None or len(raw_4h) < 50:
-
-            raise ValueError(
-                "Not enough 4H candle data returned."
+                symbol=symbol,
+                interval=HIGHER_INTERVAL,
+                total=300,
             )
 
 
-        # -------------------------------------------------
-        # FEATURES
-        # -------------------------------------------------
-
-        with st.spinner(
-            "🧮 Analyzing market structure..."
+        if (
+            raw_4h is None
+            or len(raw_4h) < 50
         ):
 
-            df = make_features(
-                raw_15m,
-                raw_4h
-            )
-
-
-        if df is None or len(df) < 500:
-
             raise ValueError(
-                "Not enough usable data after feature calculation."
+                "Not enough completed 4H candles."
             )
 
 
-        # -------------------------------------------------
-        # TRAIN
-        # -------------------------------------------------
+        # ----------------------------------------------------
+        # PREPARE FEATURES + TARGET
+        # ----------------------------------------------------
 
         with st.spinner(
-            "🤖 Running AI analysis..."
+            "🧮 Building market features..."
         ):
 
-            models, feature_cols, metrics = train_model(
-                df
+            X, y = prepare_training_data(
+                df_15m=raw_15m,
+                df_4h=raw_4h,
+                neutral_threshold=(
+                    neutral_threshold_pct / 100
+                ),
             )
 
 
-        # -------------------------------------------------
-        # NEXT CANDLE
-        # -------------------------------------------------
+        if len(X) < 500:
 
-        result = predict_next(
-            models,
-            df,
-            feature_cols
+            raise ValueError(
+                "Not enough usable training samples "
+                "after feature engineering."
+            )
+
+
+        # ----------------------------------------------------
+        # CHECK CLASS BALANCE
+        # ----------------------------------------------------
+
+        class_counts = (
+            y.value_counts()
+            .reindex(
+                [0, 1, 2],
+                fill_value=0,
+            )
         )
 
 
-        # -------------------------------------------------
-        # SAVE
-        # -------------------------------------------------
+        if (class_counts == 0).any():
+
+            raise ValueError(
+                "Training data does not contain all "
+                "three classes. Increase history or "
+                "adjust the neutral threshold."
+            )
+
+
+        # ----------------------------------------------------
+        # TIME-ORDERED TRAIN / VALIDATION SPLIT
+        # ----------------------------------------------------
+
+        split_index = int(
+            len(X) * 0.80
+        )
+
+
+        X_train = X.iloc[
+            :split_index
+        ]
+
+        y_train = y.iloc[
+            :split_index
+        ]
+
+        X_test = X.iloc[
+            split_index:
+        ]
+
+        y_test = y.iloc[
+            split_index:
+        ]
+
+
+        if len(X_test) < 100:
+
+            raise ValueError(
+                "Holdout dataset is too small."
+            )
+
+
+        # ----------------------------------------------------
+        # TRAIN MODEL
+        # ----------------------------------------------------
+
+        with st.spinner(
+            "🤖 Training NextCandle AI V2..."
+        ):
+
+            model = NextCandleModel()
+
+            model.fit(
+                X_train,
+                y_train,
+            )
+
+
+        # ----------------------------------------------------
+        # HOLDOUT EVALUATION
+        # ----------------------------------------------------
+
+        with st.spinner(
+            "🧪 Testing model on unseen candles..."
+        ):
+
+            metrics = model.evaluate(
+                X_test,
+                y_test,
+            )
+
+
+        # ----------------------------------------------------
+        # LATEST FEATURES
+        # ----------------------------------------------------
+
+        latest_features = X.iloc[
+            [-1]
+        ]
+
+
+        # ----------------------------------------------------
+        # PREDICTION
+        # ----------------------------------------------------
+
+        result_list = model.signal(
+            latest_features,
+            minimum_confidence=(
+                confidence_threshold / 100
+            ),
+            minimum_edge=(
+                edge_threshold / 100
+            ),
+        )
+
+
+        result = result_list[0]
+
+
+        # ----------------------------------------------------
+        # CURRENT PRICE
+        # ----------------------------------------------------
+
+        with st.spinner(
+            "💰 Getting latest Bybit price..."
+        ):
+
+            current_price = get_latest_price(
+                symbol
+            )
+
+
+        # ----------------------------------------------------
+        # STORE RESULT
+        # ----------------------------------------------------
 
         st.session_state.analysis_result = {
 
             "symbol": symbol,
 
-            "df": df,
+            "raw_15m": raw_15m,
+
+            "raw_4h": raw_4h,
+
+            "X": X,
+
+            "y": y,
+
+            "model": model,
 
             "result": result,
 
             "metrics": metrics,
 
-            "feature_count": len(feature_cols)
+            "class_counts": class_counts,
+
+            "current_price": current_price,
+
         }
 
 
@@ -211,36 +413,40 @@ if run_analysis:
         st.stop()
 
 
-# =========================================================
+# ============================================================
 # LOAD RESULT
-# =========================================================
-
-if "analysis_result" not in st.session_state:
-
-    st.stop()
-
+# ============================================================
 
 saved = st.session_state.analysis_result
 
+if saved is None:
+    st.stop()
+
+
 symbol = saved["symbol"]
 
-df = saved["df"]
+raw_15m = saved["raw_15m"]
+
+raw_4h = saved["raw_4h"]
+
+X = saved["X"]
+
+y = saved["y"]
+
+model = saved["model"]
 
 result = saved["result"]
 
 metrics = saved["metrics"]
 
+class_counts = saved["class_counts"]
 
-latest = df.iloc[-1]
-
-current_price = float(
-    latest["close"]
-)
+current_price = saved["current_price"]
 
 
-# =========================================================
-# MAIN RESULT
-# =========================================================
+# ============================================================
+# MAIN SIGNAL
+# ============================================================
 
 st.divider()
 
@@ -249,186 +455,347 @@ st.header(
 )
 
 
-direction = result["direction"]
+signal = result["signal"]
 
-confidence = float(
-    result["confidence"]
-)
+prediction = result["prediction"]
 
-bullish_probability = float(
-    result["bullish_probability"]
-)
+confidence = result["confidence"]
 
-bearish_probability = float(
-    result["bearish_probability"]
-)
+edge = result["edge"]
 
 
-# =========================================================
-# DIRECTION
-# =========================================================
-
-if direction == "BULLISH":
+if signal == "BULLISH":
 
     st.success(
-        f"🟢 NEXT 15M CANDLE: BULLISH\n\n"
-        f"Model confidence: {confidence * 100:.1f}%"
+        f"🟢 BULLISH\n\n"
+        f"Confidence: {confidence * 100:.2f}%\n\n"
+        f"Probability edge: {edge * 100:.2f}%"
     )
+
+
+elif signal == "BEARISH":
+
+    st.error(
+        f"🔴 BEARISH\n\n"
+        f"Confidence: {confidence * 100:.2f}%\n\n"
+        f"Probability edge: {edge * 100:.2f}%"
+    )
+
 
 else:
 
-    st.error(
-        f"🔴 NEXT 15M CANDLE: BEARISH\n\n"
-        f"Model confidence: {confidence * 100:.1f}%"
+    st.warning(
+        f"⚪ WAIT / NO STRONG EDGE\n\n"
+        f"Model's strongest class: {prediction}\n\n"
+        f"Confidence: {confidence * 100:.2f}%\n\n"
+        f"Probability edge: {edge * 100:.2f}%"
     )
 
 
-# =========================================================
+# ============================================================
 # PROBABILITIES
-# =========================================================
+# ============================================================
 
 st.subheader(
-    "🤖 Direction"
+    "🤖 Model Probability"
 )
 
-c1, c2 = st.columns(2)
 
-with c1:
+p1, p2, p3 = st.columns(3)
 
-    st.metric(
-        "🟢 BULLISH",
-        f"{bullish_probability * 100:.2f}%"
-    )
 
-with c2:
+with p1:
 
     st.metric(
         "🔴 BEARISH",
-        f"{bearish_probability * 100:.2f}%"
+        f"{result['bearish_probability'] * 100:.2f}%",
     )
 
 
-# =========================================================
+with p2:
+
+    st.metric(
+        "⚪ NEUTRAL",
+        f"{result['neutral_probability'] * 100:.2f}%",
+    )
+
+
+with p3:
+
+    st.metric(
+        "🟢 BULLISH",
+        f"{result['bullish_probability'] * 100:.2f}%",
+    )
+
+
+# ============================================================
 # MARKET
-# =========================================================
+# ============================================================
 
 st.divider()
 
 st.subheader(
-    "💰 MARKET"
+    "💰 BYBIT MARKET"
 )
 
+
 m1, m2, m3 = st.columns(3)
+
 
 with m1:
 
     st.metric(
-        "Pair",
-        symbol
+        "Symbol",
+        symbol,
     )
+
 
 with m2:
 
     st.metric(
-        "Current Price",
-        f"{current_price:.8f}"
+        "Latest Price",
+        f"{current_price:.8f}",
     )
+
 
 with m3:
 
+    last_candle = raw_15m.iloc[-1]
+
+    candle_change = (
+        float(last_candle["close"])
+        / float(last_candle["open"])
+        - 1
+    )
+
     st.metric(
-        "Model Agreement",
-        f"{result['agreement']}/3"
+        "Last 15M Change",
+        f"{candle_change * 100:.3f}%",
     )
 
 
-# =========================================================
+# ============================================================
 # 4H CONTEXT
-# =========================================================
+# ============================================================
 
 st.divider()
 
 st.subheader(
-    "🧭 4H MARKET CONTEXT"
+    "🧭 4-HOUR MARKET CONTEXT"
 )
 
-htf_score = latest.get(
-    "htf_bias_score",
-    0
+
+htf_close = raw_4h["close"]
+
+htf_ema20 = (
+    htf_close
+    .ewm(
+        span=20,
+        adjust=False,
+    )
+    .mean()
 )
 
-if pd.isna(htf_score):
+htf_ema50 = (
+    htf_close
+    .ewm(
+        span=50,
+        adjust=False,
+    )
+    .mean()
+)
 
-    htf_score = 0
+
+latest_4h_close = float(
+    htf_close.iloc[-1]
+)
+
+latest_ema20 = float(
+    htf_ema20.iloc[-1]
+)
+
+latest_ema50 = float(
+    htf_ema50.iloc[-1]
+)
 
 
-if htf_score > 0:
+if (
+    latest_4h_close > latest_ema20
+    and latest_ema20 > latest_ema50
+):
 
     htf_bias = "🟢 BULLISH"
 
-elif htf_score < 0:
+
+elif (
+    latest_4h_close < latest_ema20
+    and latest_ema20 < latest_ema50
+):
 
     htf_bias = "🔴 BEARISH"
 
+
 else:
 
-    htf_bias = "⚪ NEUTRAL"
+    htf_bias = "⚪ MIXED / NEUTRAL"
 
 
-h1, h2 = st.columns(2)
+h1, h2, h3 = st.columns(3)
+
 
 with h1:
 
     st.metric(
         "4H Bias",
-        htf_bias
+        htf_bias,
     )
+
 
 with h2:
 
     st.metric(
-        "4H Bias Score",
-        f"{htf_score:.0f}"
+        "4H Close",
+        f"{latest_4h_close:.8f}",
     )
 
 
-# =========================================================
-# MODEL INFORMATION
-# =========================================================
+with h3:
+
+    st.metric(
+        "4H Candles",
+        f"{len(raw_4h):,}",
+    )
+
+
+# ============================================================
+# MODEL QUALITY
+# ============================================================
 
 st.divider()
 
 st.subheader(
-    "🧠 MODEL INFORMATION"
+    "🧪 MODEL QUALITY — UNSEEN DATA"
 )
 
-i1, i2, i3 = st.columns(3)
 
-with i1:
+q1, q2, q3 = st.columns(3)
 
-    st.metric(
-        "Historical Candles",
-        f"{len(df):,}"
-    )
 
-with i2:
+with q1:
 
     st.metric(
-        "Model Features",
-        saved["feature_count"]
-    )
-
-with i3:
-
-    st.metric(
-        "Holdout Accuracy",
-        f"{metrics['holdout_accuracy'] * 100:.2f}%"
+        "Accuracy",
+        f"{metrics['accuracy'] * 100:.2f}%",
     )
 
 
-# =========================================================
-# RECENT CANDLES
-# =========================================================
+with q2:
+
+    st.metric(
+        "Balanced Accuracy",
+        f"{metrics['balanced_accuracy'] * 100:.2f}%",
+    )
+
+
+with q3:
+
+    st.metric(
+        "Log Loss",
+        f"{metrics['log_loss']:.4f}",
+    )
+
+
+st.caption(
+    "The holdout set is the latest 20% of the "
+    "historical samples and is not used to train "
+    "the model."
+)
+
+
+# ============================================================
+# TRAINING CLASS DISTRIBUTION
+# ============================================================
+
+st.subheader(
+    "📊 Training Target Distribution"
+)
+
+
+d1, d2, d3 = st.columns(3)
+
+
+with d1:
+
+    st.metric(
+        "BEARISH Samples",
+        f"{int(class_counts[0]):,}",
+    )
+
+
+with d2:
+
+    st.metric(
+        "NEUTRAL Samples",
+        f"{int(class_counts[1]):,}",
+    )
+
+
+with d3:
+
+    st.metric(
+        "BULLISH Samples",
+        f"{int(class_counts[2]):,}",
+    )
+
+
+# ============================================================
+# CLASSIFICATION REPORT
+# ============================================================
+
+with st.expander(
+    "📋 Detailed classification report"
+):
+
+    st.text(
+        metrics["classification_report"]
+    )
+
+
+# ============================================================
+# CONFUSION MATRIX
+# ============================================================
+
+with st.expander(
+    "🔢 Confusion matrix"
+):
+
+    matrix = np.array(
+        metrics["confusion_matrix"]
+    )
+
+    matrix_df = pd.DataFrame(
+        matrix,
+        index=[
+            "Actual BEARISH",
+            "Actual NEUTRAL",
+            "Actual BULLISH",
+        ],
+        columns=[
+            "Predicted BEARISH",
+            "Predicted NEUTRAL",
+            "Predicted BULLISH",
+        ],
+    )
+
+    st.dataframe(
+        matrix_df,
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# RECENT 15M CANDLES
+# ============================================================
 
 st.divider()
 
@@ -436,34 +803,63 @@ st.subheader(
     f"🕯️ Recent {symbol} 15M Candles"
 )
 
+
 display_columns = [
     "timestamp",
     "open",
     "high",
     "low",
     "close",
-    "volume"
+    "volume",
 ]
 
-available = [
-    c for c in display_columns
-    if c in df.columns
+
+available_columns = [
+    column
+    for column in display_columns
+    if column in raw_15m.columns
 ]
+
 
 st.dataframe(
-    df[available].tail(20),
-    use_container_width=True
+    raw_15m[
+        available_columns
+    ].tail(20),
+    use_container_width=True,
 )
 
 
-# =========================================================
+# ============================================================
+# RECENT 4H CANDLES
+# ============================================================
+
+st.subheader(
+    "🕯️ Recent 4H Candles"
+)
+
+
+st.dataframe(
+    raw_4h[
+        available_columns
+    ].tail(10),
+    use_container_width=True,
+)
+
+
+# ============================================================
 # FOOTER
-# =========================================================
+# ============================================================
 
 st.divider()
 
+st.warning(
+    "⚠️ IMPORTANT: This system produces statistical "
+    "probabilities, not guaranteed predictions. "
+    "Crypto perpetual markets can move rapidly, "
+    "and leverage can amplify losses."
+)
+
 st.caption(
-    "⚠️ This is a statistical market-analysis system. "
-    "It does not guarantee the direction or profitability "
-    "of any future candle."
+    "NextCandle AI V2 • Bybit data • "
+    "15M prediction • 4H context"
 )
