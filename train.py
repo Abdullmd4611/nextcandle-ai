@@ -18,7 +18,7 @@ NextCandleModel,
 
 ============================================================
 
-NextCandle AI — TRAINING ENGINE V3
+# NextCandle AI — TRAINING ENGINE V3
 
 ============================================================
 
