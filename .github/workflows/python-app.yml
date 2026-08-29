@@ -1,16 +1,17 @@
-name: NextCandle AI - Code Test
+name: NextCandle AI - Train
 
 on:
   push:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  test-and-train:
     runs-on: ubuntu-latest
 
     steps:
@@ -29,7 +30,7 @@ jobs:
 
       - name: Check Python syntax
         run: |
-          python -m py_compile app.py data.py features.py model.py
+          python -m py_compile app.py data.py features.py model.py train.py
 
       - name: Check module imports
         run: |
@@ -41,9 +42,28 @@ jobs:
           test -f data.py
           test -f features.py
           test -f model.py
+          test -f train.py
           test -f requirements.txt
           echo "All required project files are present."
 
-      - name: Test completed
+      - name: Run NextCandle AI training
         run: |
-          echo "NextCandle AI code checks passed."
+          python train.py
+
+      - name: Check training outputs
+        run: |
+          test -f nextcandle_model.joblib
+          test -f training_metrics.json
+          echo "Training outputs created successfully."
+
+      - name: Upload trained model and metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcandle-ai-trained-model
+          path: |
+            nextcandle_model.joblib
+            training_metrics.json
+
+      - name: Training completed
+        run: |
+          echo "NextCandle AI training completed successfully."
