@@ -4,7 +4,7 @@ import pandas as pd
 
 
 # =========================================================
-# NextCandle AI — BYBIT FUTURES DATA ENGINE V4.0
+# NextCandle AI — BYBIT FUTURES DATA ENGINE V4.1
 #
 # Market:
 #     Bybit USDT Perpetual
@@ -18,14 +18,12 @@ import pandas as pd
 # Evidence:
 #     1M + 5M + 15M + 4H
 #
-# Bybit API:
-#     V5 Public Market API
+# API:
+#     Bybit V5 Public Market API
 #     category = linear
 #
 # IMPORTANT:
 #     Only COMPLETED candles are returned.
-#
-#     The currently forming candle is NEVER included.
 # =========================================================
 
 
@@ -39,25 +37,17 @@ CATEGORY = "linear"
 # =========================================================
 
 INTERVAL_SECONDS = {
-
     "Min1": 60,
-
     "Min5": 5 * 60,
-
     "Min15": 15 * 60,
-
     "Hour4": 4 * 60 * 60,
 }
 
 
 BYBIT_INTERVALS = {
-
     "Min1": "1",
-
     "Min5": "5",
-
     "Min15": "15",
-
     "Hour4": "240",
 }
 
@@ -69,12 +59,8 @@ BYBIT_INTERVALS = {
 SESSION = requests.Session()
 
 SESSION.headers.update({
-
-    "User-Agent":
-        "NextCandleAI/4.0",
-
-    "Accept":
-        "application/json",
+    "User-Agent": "NextCandleAI/4.1",
+    "Accept": "application/json",
 })
 
 
@@ -105,33 +91,16 @@ def _normalize_symbol(symbol):
             "Symbol cannot be None."
         )
 
-    symbol = (
-        str(symbol)
-        .upper()
-        .strip()
-    )
+    symbol = str(symbol).upper().strip()
 
-    # -----------------------------------------------------
-    # Allow users to type:
-    #
+    # Accept:
     # CYSUSDT
-    # CYSUSDT.P
     # CYS_USDT
-    #
-    # Bybit linear uses:
-    #
-    # CYSUSDT
-    # -----------------------------------------------------
+    # CYSUSDT.P
+    # CYS_USDT.P
 
-    symbol = symbol.replace(
-        ".P",
-        "",
-    )
-
-    symbol = symbol.replace(
-        "_",
-        "",
-    )
+    symbol = symbol.replace("_", "")
+    symbol = symbol.replace(".P", "")
 
     if not symbol:
 
@@ -143,7 +112,7 @@ def _normalize_symbol(symbol):
 
 
 # =========================================================
-# BYBIT V5 REQUEST
+# REQUEST BYBIT V5 KLINES
 # =========================================================
 
 def _request(
@@ -151,7 +120,8 @@ def _request(
     interval,
     start,
     end,
-    retries=3,
+    limit=1000,
+    retries=4,
 ):
 
     url = (
@@ -159,26 +129,12 @@ def _request(
     )
 
     params = {
-
-        "category":
-            CATEGORY,
-
-        "symbol":
-            symbol,
-
-        "interval":
-            BYBIT_INTERVALS[
-                interval
-            ],
-
-        "start":
-            int(start),
-
-        "end":
-            int(end),
-
-        "limit":
-            1000,
+        "category": CATEGORY,
+        "symbol": symbol,
+        "interval": interval,
+        "start": int(start),
+        "end": int(end),
+        "limit": int(limit),
     }
 
     last_error = None
@@ -190,7 +146,7 @@ def _request(
             response = SESSION.get(
                 url,
                 params=params,
-                timeout=20,
+                timeout=30,
             )
 
             response.raise_for_status()
@@ -211,56 +167,56 @@ def _request(
 
             result = payload.get(
                 "result",
-                {},
+                {}
             )
 
-            data = result.get(
+            rows = result.get(
                 "list",
-                [],
+                []
             )
-
-            if not data:
-
-                return pd.DataFrame()
-
-            rows = []
-
-            for candle in data:
-
-                if len(candle) < 7:
-
-                    continue
-
-                rows.append({
-
-                    "timestamp":
-                        candle[0],
-
-                    "open":
-                        candle[1],
-
-                    "high":
-                        candle[2],
-
-                    "low":
-                        candle[3],
-
-                    "close":
-                        candle[4],
-
-                    "volume":
-                        candle[5],
-
-                    "turnover":
-                        candle[6],
-                })
 
             if not rows:
 
                 return pd.DataFrame()
 
+            records = []
+
+            for row in rows:
+
+                if len(row) < 7:
+
+                    continue
+
+                records.append({
+
+                    "timestamp":
+                        int(row[0]),
+
+                    "open":
+                        float(row[1]),
+
+                    "high":
+                        float(row[2]),
+
+                    "low":
+                        float(row[3]),
+
+                    "close":
+                        float(row[4]),
+
+                    "volume":
+                        float(row[5]),
+
+                    "turnover":
+                        float(row[6]),
+                })
+
+            if not records:
+
+                return pd.DataFrame()
+
             return pd.DataFrame(
-                rows
+                records
             )
 
         except Exception as exc:
@@ -270,7 +226,7 @@ def _request(
             if attempt < retries - 1:
 
                 time.sleep(
-                    1.5 * (attempt + 1)
+                    2.0 * (attempt + 1)
                 )
 
     raise RuntimeError(
@@ -303,20 +259,16 @@ def _normalize(frame):
     x = frame.copy()
 
     # -----------------------------------------------------
-    # Bybit V5 timestamps are milliseconds.
+    # Bybit timestamps are milliseconds.
     # -----------------------------------------------------
 
     x["timestamp"] = pd.to_datetime(
-        pd.to_numeric(
-            x["timestamp"],
-            errors="coerce",
-        ),
+        x["timestamp"],
         unit="ms",
         utc=True,
     )
 
     numeric_columns = [
-
         "open",
         "high",
         "low",
@@ -385,10 +337,6 @@ def _remove_forming_candle(
         time.time()
     )
 
-    # -----------------------------------------------------
-    # Start of the CURRENT candle.
-    # -----------------------------------------------------
-
     current_period_start = (
         now // seconds
     ) * seconds
@@ -398,11 +346,6 @@ def _remove_forming_candle(
         unit="s",
         utc=True,
     )
-
-    # -----------------------------------------------------
-    # ONLY candles that started before the current candle
-    # are completed.
-    # -----------------------------------------------------
 
     completed = frame[
         frame["timestamp"]
@@ -434,6 +377,8 @@ def fetch_klines(
         interval
     )
 
+    total = int(total)
+
     if total < 100:
 
         raise ValueError(
@@ -449,34 +394,32 @@ def fetch_klines(
         time.time()
     )
 
-    # -----------------------------------------------------
-    # Bybit maximum kline page size is 1000.
-    # -----------------------------------------------------
-
     max_per_request = 1000
 
     # -----------------------------------------------------
-    # Ask for slightly more history than necessary because
-    # the current forming candle will be removed later.
+    # IMPORTANT:
+    #
+    # Bybit V5 requires start/end in MILLISECONDS.
     # -----------------------------------------------------
 
-    target_start = (
-        now
-        - (
-            (total + 2)
-            * seconds
-        )
+    target_end = (
+        now * 1000
     )
 
     target_start = (
-        target_start // seconds
-    ) * seconds
-
-    cursor_end = now
+        (now - (total * seconds) - seconds)
+        * 1000
+    )
 
     chunks = []
 
+    cursor_end = target_end
+
     request_count = 0
+
+    interval_ms = (
+        seconds * 1000
+    )
 
     while cursor_end > target_start:
 
@@ -485,20 +428,23 @@ def fetch_klines(
             cursor_end
             - (
                 max_per_request
-                * seconds
-            )
-            + 1,
+                * interval_ms
+            ),
         )
 
         chunk = _request(
 
             symbol=symbol,
 
-            interval=interval,
+            interval=BYBIT_INTERVALS[
+                interval
+            ],
 
             start=cursor_start,
 
             end=cursor_end,
+
+            limit=max_per_request,
         )
 
         request_count += 1
@@ -509,12 +455,8 @@ def fetch_klines(
                 chunk
             )
 
-        # -------------------------------------------------
-        # Move backwards.
-        # -------------------------------------------------
-
         cursor_end = (
-            cursor_start - 1
+            cursor_start - interval_ms
         )
 
         if request_count > 100:
@@ -526,7 +468,7 @@ def fetch_klines(
             )
 
         time.sleep(
-            0.05
+            0.10
         )
 
     if not chunks:
@@ -546,9 +488,7 @@ def fetch_klines(
     )
 
     # -----------------------------------------------------
-    # CRITICAL:
-    #
-    # Remove the currently forming candle.
+    # Remove currently forming candle.
     # -----------------------------------------------------
 
     frame = _remove_forming_candle(
@@ -557,7 +497,7 @@ def fetch_klines(
     )
 
     # -----------------------------------------------------
-    # Keep only requested number.
+    # Keep requested amount.
     # -----------------------------------------------------
 
     if len(frame) > total:
@@ -597,9 +537,7 @@ def fetch_multi_timeframe(
     )
 
     # -----------------------------------------------------
-    # 5M:
-    #
-    # 3 x 5M candles = 1 x 15M candle.
+    # 5M
     # -----------------------------------------------------
 
     candles_5m = int(
@@ -608,9 +546,7 @@ def fetch_multi_timeframe(
     )
 
     # -----------------------------------------------------
-    # 1M:
-    #
-    # 15 x 1M candles = 1 x 15M candle.
+    # 1M
     # -----------------------------------------------------
 
     candles_1m = int(
@@ -619,9 +555,7 @@ def fetch_multi_timeframe(
     )
 
     # -----------------------------------------------------
-    # 4H:
-    #
-    # 16 x 15M candles = 1 x 4H candle.
+    # 4H
     # -----------------------------------------------------
 
     candles_4h = max(
@@ -634,55 +568,43 @@ def fetch_multi_timeframe(
 
     data = {}
 
-    # =====================================================
-    # 1 MINUTE
-    # =====================================================
+    print(
+        "[NextCandle AI] Downloading 1M candles..."
+    )
 
     data["1m"] = fetch_klines(
-
         symbol=symbol,
-
         interval="Min1",
-
         total=candles_1m,
     )
 
-    # =====================================================
-    # 5 MINUTE
-    # =====================================================
+    print(
+        "[NextCandle AI] Downloading 5M candles..."
+    )
 
     data["5m"] = fetch_klines(
-
         symbol=symbol,
-
         interval="Min5",
-
         total=candles_5m,
     )
 
-    # =====================================================
-    # 15 MINUTE
-    # =====================================================
+    print(
+        "[NextCandle AI] Downloading 15M candles..."
+    )
 
     data["15m"] = fetch_klines(
-
         symbol=symbol,
-
         interval="Min15",
-
         total=candles_15m,
     )
 
-    # =====================================================
-    # 4 HOUR
-    # =====================================================
+    print(
+        "[NextCandle AI] Downloading 4H candles..."
+    )
 
     data["4h"] = fetch_klines(
-
         symbol=symbol,
-
         interval="Hour4",
-
         total=candles_4h,
     )
 
@@ -708,13 +630,9 @@ def validate_timeframe_data(
         )
 
     required = {
-
         "1m",
-
         "5m",
-
         "15m",
-
         "4h",
     }
 
@@ -731,17 +649,11 @@ def validate_timeframe_data(
         )
 
     required_columns = [
-
         "timestamp",
-
         "open",
-
         "high",
-
         "low",
-
         "close",
-
         "volume",
     ]
 
@@ -758,7 +670,6 @@ def validate_timeframe_data(
             )
 
         missing_columns = [
-
             column
             for column in required_columns
             if column not in frame.columns
@@ -768,13 +679,8 @@ def validate_timeframe_data(
 
             raise ValueError(
                 f"{timeframe} is missing "
-                f"columns: "
-                f"{missing_columns}"
+                f"columns: {missing_columns}"
             )
-
-        # -------------------------------------------------
-        # Timestamp validation.
-        # -------------------------------------------------
 
         if not pd.api.types.is_datetime64_any_dtype(
             frame["timestamp"]
@@ -803,18 +709,10 @@ def validate_timeframe_data(
                 f"duplicate timestamps."
             )
 
-        # -------------------------------------------------
-        # Price validation.
-        # -------------------------------------------------
-
         price_columns = [
-
             "open",
-
             "high",
-
             "low",
-
             "close",
         ]
 
@@ -829,10 +727,6 @@ def validate_timeframe_data(
                 f"{timeframe} contains "
                 f"invalid non-positive prices."
             )
-
-        # -------------------------------------------------
-        # OHLC validation.
-        # -------------------------------------------------
 
         invalid_ohlc = (
 
@@ -854,10 +748,6 @@ def validate_timeframe_data(
                 f"invalid OHLC relationships."
             )
 
-        # -------------------------------------------------
-        # Volume validation.
-        # -------------------------------------------------
-
         if (
             frame["volume"]
             < 0
@@ -876,22 +766,18 @@ def validate_timeframe_data(
         time.time()
     )
 
-    seconds_map = {
-
-        "1m": 60,
-
-        "5m": 5 * 60,
-
-        "15m": 15 * 60,
-
-        "4h": 4 * 60 * 60,
-    }
-
     for timeframe, frame in data.items():
 
-        seconds = seconds_map[
-            timeframe
-        ]
+        seconds = (
+            INTERVAL_SECONDS[
+                {
+                    "1m": "Min1",
+                    "5m": "Min5",
+                    "15m": "Min15",
+                    "4h": "Hour4",
+                }[timeframe]
+            ]
+        )
 
         current_period_start = (
             now // seconds
@@ -927,11 +813,8 @@ def get_latest_completed_candle(
 ):
 
     frame = fetch_klines(
-
         symbol=symbol,
-
         interval=interval,
-
         total=200,
     )
 
@@ -945,7 +828,7 @@ def get_latest_completed_candle(
 
 
 # =========================================================
-# LATEST BYBIT PRICE
+# LATEST PRICE
 # =========================================================
 
 def get_latest_price(
@@ -961,59 +844,53 @@ def get_latest_price(
     )
 
     params = {
-
-        "category":
-            CATEGORY,
-
-        "symbol":
-            symbol,
+        "category": CATEGORY,
+        "symbol": symbol,
     }
 
     last_error = None
 
-    for attempt in range(3):
+    for attempt in range(4):
 
         try:
 
             response = SESSION.get(
                 url,
                 params=params,
-                timeout=15,
+                timeout=20,
             )
 
             response.raise_for_status()
 
             payload = response.json()
 
-            ret_code = payload.get(
+            if payload.get(
                 "retCode"
-            )
-
-            if ret_code != 0:
+            ) != 0:
 
                 raise RuntimeError(
                     "Bybit ticker request failed: "
-                    f"{ret_code} — "
                     f"{payload.get('retMsg', 'Unknown error')}"
                 )
 
             result = payload.get(
                 "result",
-                {},
+                {}
             )
 
-            data = result.get(
+            ticker_list = result.get(
                 "list",
-                [],
+                []
             )
 
-            if not data:
+            if not ticker_list:
 
                 raise RuntimeError(
-                    "Bybit returned empty ticker data."
+                    "Bybit returned an empty "
+                    "ticker response."
                 )
 
-            price = data[0].get(
+            price = ticker_list[0].get(
                 "lastPrice"
             )
 
@@ -1032,10 +909,10 @@ def get_latest_price(
 
             last_error = exc
 
-            if attempt < 2:
+            if attempt < 3:
 
                 time.sleep(
-                    1.0 * (attempt + 1)
+                    1.5 * (attempt + 1)
                 )
 
     raise RuntimeError(
