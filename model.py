@@ -13,18 +13,27 @@ from sklearn.metrics import (
 )
 
 
+# ============================================================
+# NextCandle AI — MODEL ENGINE V2
+# ============================================================
+#
+# Classes:
+#     0 = BEARISH
+#     1 = NEUTRAL
+#     2 = BULLISH
+#
+# Primary prediction:
+#     NEXT 15-MINUTE CANDLE
+#
+# Important:
+#     Training and evaluation must remain time ordered.
+# ============================================================
+
+
 MODEL_PATH = "nextcandle_model.joblib"
 
 
 class NextCandleModel:
-    """
-    NextCandle AI V2
-
-    Classes:
-        0 = BEARISH
-        1 = NEUTRAL
-        2 = BULLISH
-    """
 
     CLASS_NAMES = {
         0: "BEARISH",
@@ -32,175 +41,362 @@ class NextCandleModel:
         2: "BULLISH",
     }
 
+    VERSION = "2.1"
+
     def __init__(
         self,
         model_path=MODEL_PATH,
         random_state=42,
     ):
+
         self.model_path = model_path
         self.random_state = random_state
 
+        # ----------------------------------------------------
+        # Gradient boosting model
+        #
+        # IMPORTANT:
+        #
+        # Internal sklearn early stopping is disabled.
+        #
+        # Market data is time-series data. We don't want the
+        # estimator creating its own validation split.
+        #
+        # The application performs the chronological holdout
+        # separately.
+        # ----------------------------------------------------
+
         self.model = HistGradientBoostingClassifier(
+
             learning_rate=0.035,
+
             max_iter=500,
+
             max_leaf_nodes=31,
+
             max_depth=None,
+
             min_samples_leaf=30,
+
             l2_regularization=1.0,
-            early_stopping=True,
-            validation_fraction=0.15,
-            n_iter_no_change=40,
+
+            early_stopping=False,
+
+            validation_fraction=None,
+
+            n_iter_no_change=None,
+
             random_state=random_state,
         )
 
         self.feature_columns = None
+
         self.is_fitted = False
+
+
+    # ========================================================
+    # VALIDATE INPUT
+    # ========================================================
+
+    @staticmethod
+    def _validate_training_input(X, y):
+
+        if X is None or X.empty:
+            raise ValueError(
+                "Training features are empty."
+            )
+
+        if y is None or len(y) == 0:
+            raise ValueError(
+                "Training target is empty."
+            )
+
+        if len(X) != len(y):
+            raise ValueError(
+                "X and y length mismatch: "
+                f"{len(X)} != {len(y)}"
+            )
+
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+
+        y = pd.Series(y).reset_index(
+            drop=True
+        )
+
+        X = X.reset_index(
+            drop=True
+        )
+
+        # ----------------------------------------------------
+        # Feature names must be unique.
+        # ----------------------------------------------------
+
+        if not X.columns.is_unique:
+
+            duplicated = (
+                X.columns[
+                    X.columns.duplicated()
+                ]
+                .tolist()
+            )
+
+            raise ValueError(
+                "Duplicate feature columns detected: "
+                f"{duplicated}"
+            )
+
+        # ----------------------------------------------------
+        # Target must contain only expected classes.
+        # ----------------------------------------------------
+
+        y_numeric = pd.to_numeric(
+            y,
+            errors="coerce",
+        )
+
+        if y_numeric.isna().any():
+
+            raise ValueError(
+                "Training target contains "
+                "non-numeric values."
+            )
+
+        y = y_numeric.astype(int)
+
+        unique_classes = sorted(
+            y.unique().tolist()
+        )
+
+        invalid_classes = [
+            value
+            for value in unique_classes
+            if value not in (0, 1, 2)
+        ]
+
+        if invalid_classes:
+
+            raise ValueError(
+                "Invalid target classes: "
+                f"{invalid_classes}. "
+                "Expected only 0, 1, 2."
+            )
+
+        if len(unique_classes) < 2:
+
+            raise ValueError(
+                "Training data contains fewer "
+                "than two classes."
+            )
+
+        return X, y
+
 
     # ========================================================
     # TRAIN
     # ========================================================
 
     def fit(self, X, y):
-        """
-        Train the model.
 
-        X:
-            Feature dataframe.
+        X, y = self._validate_training_input(
+            X,
+            y,
+        )
 
-        y:
-            0 = bearish
-            1 = neutral
-            2 = bullish
-        """
+        # ----------------------------------------------------
+        # Store exact training schema.
+        # ----------------------------------------------------
 
-        if X is None or X.empty:
-            raise ValueError("Training features are empty.")
+        self.feature_columns = list(
+            X.columns
+        )
 
-        if y is None or len(y) == 0:
-            raise ValueError("Training target is empty.")
+        # ----------------------------------------------------
+        # Clean numerical features.
+        #
+        # HistGradientBoosting supports NaN values.
+        # ----------------------------------------------------
 
-        if len(X) != len(y):
-            raise ValueError(
-                f"X and y length mismatch: "
-                f"{len(X)} != {len(y)}"
-            )
-
-        X = X.copy()
-
-        y = pd.Series(y).astype(int)
-
-        # Make sure the model sees the exact same columns
-        # every time it is trained or used.
-        self.feature_columns = list(X.columns)
-
-        # Replace invalid numerical values.
         X = X.replace(
             [np.inf, -np.inf],
             np.nan,
         )
 
-        # HistGradientBoosting can handle NaN values.
-        # We intentionally do NOT blindly forward-fill data.
         X = X.astype(float)
 
-        # Validate target classes.
-        unique_classes = sorted(y.unique().tolist())
+        # ----------------------------------------------------
+        # Train.
+        #
+        # No random train/test split occurs here.
+        # The caller controls the chronological split.
+        # ----------------------------------------------------
 
-        invalid_classes = [
-            c for c in unique_classes
-            if c not in (0, 1, 2)
-        ]
-
-        if invalid_classes:
-            raise ValueError(
-                f"Invalid target classes: {invalid_classes}. "
-                "Expected only 0, 1, 2."
-            )
-
-        if len(unique_classes) < 2:
-            raise ValueError(
-                "Training data contains fewer than two "
-                "classes. More market history is required."
-            )
-
-        self.model.fit(X, y)
+        self.model.fit(
+            X,
+            y,
+        )
 
         self.is_fitted = True
 
         return self
 
+
     # ========================================================
-    # PREDICTION
+    # PREPARE FEATURES
     # ========================================================
 
     def _prepare_features(self, X):
+
         if not self.is_fitted:
+
             raise RuntimeError(
                 "Model has not been trained yet."
             )
 
         if isinstance(X, pd.Series):
+
             X = X.to_frame().T
+
+        if not isinstance(X, pd.DataFrame):
+
+            X = pd.DataFrame(X)
 
         X = X.copy()
 
-        # Ensure feature order is identical to training.
+        # ----------------------------------------------------
+        # Check for missing features.
+        # ----------------------------------------------------
+
         missing = [
-            col
-            for col in self.feature_columns
-            if col not in X.columns
+            column
+            for column in self.feature_columns
+            if column not in X.columns
         ]
 
         if missing:
+
             raise ValueError(
                 "Missing model features: "
                 f"{missing}"
             )
 
-        X = X[self.feature_columns]
+        # ----------------------------------------------------
+        # Extra columns are harmless.
+        # Only the exact training schema is used.
+        # ----------------------------------------------------
+
+        X = X[
+            self.feature_columns
+        ]
 
         X = X.replace(
             [np.inf, -np.inf],
             np.nan,
         )
 
-        return X.astype(float)
+        X = X.astype(float)
+
+        return X
+
+
+    # ========================================================
+    # PROBABILITY
+    # ========================================================
 
     def predict_proba(self, X):
-        """
-        Return probability for every class.
-        """
 
-        X = self._prepare_features(X)
+        X = self._prepare_features(
+            X
+        )
 
-        probabilities = self.model.predict_proba(X)
+        probabilities = (
+            self.model.predict_proba(X)
+        )
 
-        # sklearn returns probabilities in class order.
-        # Rebuild explicitly so our output always has:
-        # [bearish, neutral, bullish]
+        # ----------------------------------------------------
+        # Always return:
+        #
+        # [BEARISH, NEUTRAL, BULLISH]
+        #
+        # regardless of sklearn's internal class ordering.
+        # ----------------------------------------------------
+
         output = np.zeros(
-            (len(X), 3),
+            (
+                len(X),
+                3,
+            ),
             dtype=float,
         )
 
         for index, class_id in enumerate(
             self.model.classes_
         ):
-            output[:, int(class_id)] = probabilities[:, index]
+
+            class_id = int(class_id)
+
+            if class_id in (
+                0,
+                1,
+                2,
+            ):
+
+                output[
+                    :,
+                    class_id
+                ] = probabilities[
+                    :,
+                    index
+                ]
+
+        # ----------------------------------------------------
+        # Numerical safety.
+        # ----------------------------------------------------
+
+        output = np.clip(
+            output,
+            0.0,
+            1.0,
+        )
+
+        row_sums = output.sum(
+            axis=1,
+            keepdims=True,
+        )
+
+        valid_rows = (
+            row_sums[:, 0] > 0
+        )
+
+        output[
+            valid_rows
+        ] = (
+            output[
+                valid_rows
+            ]
+            / row_sums[
+                valid_rows
+            ]
+        )
 
         return output
 
-    def predict(self, X):
-        """
-        Return class prediction.
-        """
 
-        probabilities = self.predict_proba(X)
+    # ========================================================
+    # CLASS PREDICTION
+    # ========================================================
+
+    def predict(self, X):
+
+        probabilities = (
+            self.predict_proba(X)
+        )
 
         return np.argmax(
             probabilities,
             axis=1,
         )
+
 
     # ========================================================
     # SIGNAL
@@ -212,168 +408,274 @@ class NextCandleModel:
         minimum_confidence=0.55,
         minimum_edge=0.10,
     ):
-        """
-        Convert probabilities into a trading-style signal.
 
-        The model does NOT force a trade.
+        if not (
+            0.0
+            <= minimum_confidence
+            <= 1.0
+        ):
 
-        If confidence/edge is weak:
-            WAIT
+            raise ValueError(
+                "minimum_confidence must "
+                "be between 0 and 1."
+            )
 
-        Otherwise:
-            BEARISH / BULLISH
+        if not (
+            0.0
+            <= minimum_edge
+            <= 1.0
+        ):
 
-        Neutral predictions become WAIT.
-        """
+            raise ValueError(
+                "minimum_edge must "
+                "be between 0 and 1."
+            )
 
-        probabilities = self.predict_proba(X)
+        probabilities = (
+            self.predict_proba(X)
+        )
 
         results = []
 
         for probs in probabilities:
 
-            bearish = float(probs[0])
-            neutral = float(probs[1])
-            bullish = float(probs[2])
+            bearish = float(
+                probs[0]
+            )
 
-            ordered = np.argsort(probs)[::-1]
+            neutral = float(
+                probs[1]
+            )
 
-            best_class = int(ordered[0])
-            second_class = int(ordered[1])
+            bullish = float(
+                probs[2]
+            )
 
-            confidence = float(probs[best_class])
+            ordered = np.argsort(
+                probs
+            )[::-1]
+
+            best_class = int(
+                ordered[0]
+            )
+
+            second_class = int(
+                ordered[1]
+            )
+
+            confidence = float(
+                probs[best_class]
+            )
 
             edge = float(
                 probs[best_class]
                 - probs[second_class]
             )
 
+            # ------------------------------------------------
+            # We only issue a directional signal when:
+            #
+            # 1. The model's strongest class is bullish/bearish
+            # 2. Confidence is high enough
+            # 3. Probability edge is high enough
+            #
+            # Otherwise WAIT.
+            # ------------------------------------------------
+
             if (
                 best_class == 2
-                and confidence >= minimum_confidence
-                and edge >= minimum_edge
+                and confidence
+                >= minimum_confidence
+                and edge
+                >= minimum_edge
             ):
+
                 signal = "BULLISH"
 
             elif (
                 best_class == 0
-                and confidence >= minimum_confidence
-                and edge >= minimum_edge
+                and confidence
+                >= minimum_confidence
+                and edge
+                >= minimum_edge
             ):
+
                 signal = "BEARISH"
 
             else:
+
                 signal = "WAIT"
 
             results.append(
                 {
                     "signal": signal,
-                    "prediction": self.CLASS_NAMES[
-                        best_class
-                    ],
-                    "confidence": confidence,
-                    "edge": edge,
-                    "bearish_probability": bearish,
-                    "neutral_probability": neutral,
-                    "bullish_probability": bullish,
+
+                    "prediction":
+                        self.CLASS_NAMES[
+                            best_class
+                        ],
+
+                    "confidence":
+                        confidence,
+
+                    "edge":
+                        edge,
+
+                    "bearish_probability":
+                        bearish,
+
+                    "neutral_probability":
+                        neutral,
+
+                    "bullish_probability":
+                        bullish,
                 }
             )
 
         return results
+
 
     # ========================================================
     # EVALUATION
     # ========================================================
 
     def evaluate(self, X, y):
-        """
-        Evaluate the trained model.
-
-        Returns metrics useful for determining whether
-        the model is actually learning or simply guessing.
-        """
 
         if not self.is_fitted:
+
             raise RuntimeError(
-                "Model must be trained before evaluation."
+                "Model must be trained "
+                "before evaluation."
             )
 
-        X = self._prepare_features(X)
-        y = pd.Series(y).astype(int)
+        X = self._prepare_features(
+            X
+        )
 
-        predictions = self.predict(X)
-        probabilities = self.predict_proba(X)
+        y = pd.Series(
+            y
+        ).astype(int)
+
+        if len(X) != len(y):
+
+            raise ValueError(
+                "Evaluation X/y length mismatch: "
+                f"{len(X)} != {len(y)}"
+            )
+
+        predictions = self.predict(
+            X
+        )
+
+        probabilities = (
+            self.predict_proba(X)
+        )
 
         metrics = {
-            "accuracy": float(
-                accuracy_score(
+
+            "accuracy":
+                float(
+                    accuracy_score(
+                        y,
+                        predictions,
+                    )
+                ),
+
+            "balanced_accuracy":
+                float(
+                    balanced_accuracy_score(
+                        y,
+                        predictions,
+                    )
+                ),
+
+            "log_loss":
+                float(
+                    log_loss(
+                        y,
+                        probabilities,
+                        labels=[
+                            0,
+                            1,
+                            2,
+                        ],
+                    )
+                ),
+
+            "confusion_matrix":
+                confusion_matrix(
                     y,
                     predictions,
-                )
-            ),
-            "balanced_accuracy": float(
-                balanced_accuracy_score(
+                    labels=[
+                        0,
+                        1,
+                        2,
+                    ],
+                ).tolist(),
+
+            "classification_report":
+                classification_report(
                     y,
                     predictions,
-                )
-            ),
-            "log_loss": float(
-                log_loss(
-                    y,
-                    probabilities,
-                    labels=[0, 1, 2],
-                )
-            ),
-            "confusion_matrix": confusion_matrix(
-                y,
-                predictions,
-                labels=[0, 1, 2],
-            ).tolist(),
-            "classification_report": classification_report(
-                y,
-                predictions,
-                labels=[0, 1, 2],
-                target_names=[
-                    "BEARISH",
-                    "NEUTRAL",
-                    "BULLISH",
-                ],
-                zero_division=0,
-            ),
+                    labels=[
+                        0,
+                        1,
+                        2,
+                    ],
+                    target_names=[
+                        "BEARISH",
+                        "NEUTRAL",
+                        "BULLISH",
+                    ],
+                    zero_division=0,
+                ),
         }
 
         return metrics
+
 
     # ========================================================
     # SAVE
     # ========================================================
 
     def save(self, path=None):
-        """
-        Save the trained model and feature schema.
-        """
 
         if not self.is_fitted:
+
             raise RuntimeError(
                 "Cannot save an untrained model."
             )
 
-        path = path or self.model_path
+        path = (
+            path
+            or self.model_path
+        )
 
-        payload = {
-            "model": self.model,
-            "feature_columns": self.feature_columns,
-            "random_state": self.random_state,
-            "version": "2.0",
-        }
-
-        directory = os.path.dirname(path)
+        directory = os.path.dirname(
+            path
+        )
 
         if directory:
+
             os.makedirs(
                 directory,
                 exist_ok=True,
             )
+
+        payload = {
+
+            "model":
+                self.model,
+
+            "feature_columns":
+                self.feature_columns,
+
+            "random_state":
+                self.random_state,
+
+            "version":
+                self.VERSION,
+        }
 
         joblib.dump(
             payload,
@@ -382,29 +684,51 @@ class NextCandleModel:
 
         return path
 
+
     # ========================================================
     # LOAD
     # ========================================================
 
     def load(self, path=None):
-        """
-        Load a previously trained model.
-        """
 
-        path = path or self.model_path
+        path = (
+            path
+            or self.model_path
+        )
 
         if not os.path.exists(path):
+
             raise FileNotFoundError(
                 f"Model file not found: {path}"
             )
 
-        payload = joblib.load(path)
+        payload = joblib.load(
+            path
+        )
 
-        self.model = payload["model"]
+        if "model" not in payload:
 
-        self.feature_columns = payload[
-            "feature_columns"
+            raise ValueError(
+                "Invalid saved model: "
+                "missing model object."
+            )
+
+        if "feature_columns" not in payload:
+
+            raise ValueError(
+                "Invalid saved model: "
+                "missing feature schema."
+            )
+
+        self.model = payload[
+            "model"
         ]
+
+        self.feature_columns = list(
+            payload[
+                "feature_columns"
+            ]
+        )
 
         self.random_state = payload.get(
             "random_state",
@@ -415,50 +739,65 @@ class NextCandleModel:
 
         return self
 
+
     # ========================================================
-    # HUMAN-READABLE PREDICTION
+    # HUMAN-READABLE EXPLANATION
     # ========================================================
 
     def explain_prediction(self, X):
-        """
-        Return a compact explanation of the model's
-        probability distribution.
-        """
 
-        probabilities = self.predict_proba(X)
+        probabilities = (
+            self.predict_proba(X)
+        )
 
         explanations = []
 
         for probs in probabilities:
 
-            bearish = float(probs[0])
-            neutral = float(probs[1])
-            bullish = float(probs[2])
+            bearish = float(
+                probs[0]
+            )
 
-            if bullish >= bearish and bullish >= neutral:
-                dominant = "BULLISH"
+            neutral = float(
+                probs[1]
+            )
 
-            elif bearish >= bullish and bearish >= neutral:
-                dominant = "BEARISH"
+            bullish = float(
+                probs[2]
+            )
 
-            else:
-                dominant = "NEUTRAL"
+            dominant_index = int(
+                np.argmax(probs)
+            )
+
+            dominant = (
+                self.CLASS_NAMES[
+                    dominant_index
+                ]
+            )
 
             explanations.append(
                 {
-                    "dominant_class": dominant,
-                    "bearish": round(
-                        bearish * 100,
-                        2,
-                    ),
-                    "neutral": round(
-                        neutral * 100,
-                        2,
-                    ),
-                    "bullish": round(
-                        bullish * 100,
-                        2,
-                    ),
+                    "dominant_class":
+                        dominant,
+
+                    "bearish":
+                        round(
+                            bearish * 100,
+                            2,
+                        ),
+
+                    "neutral":
+                        round(
+                            neutral * 100,
+                            2,
+                        ),
+
+                    "bullish":
+                        round(
+                            bullish * 100,
+                            2,
+                        ),
                 }
             )
 
