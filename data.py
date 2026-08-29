@@ -4,19 +4,23 @@ import pandas as pd
 
 
 # =========================================================
-# NextCandle AI — MEXC FUTURES DATA ENGINE V3.1
+# NextCandle AI — BYBIT FUTURES DATA ENGINE V4.0
 #
 # Market:
-#     CYSUSDT.P
+#     Bybit USDT Perpetual
 #
-# MEXC contract symbol:
-#     CYS_USDT
+# Primary:
+#     CYSUSDT
 #
 # Prediction:
 #     NEXT 15-MINUTE CANDLE
 #
 # Evidence:
 #     1M + 5M + 15M + 4H
+#
+# Bybit API:
+#     V5 Public Market API
+#     category = linear
 #
 # IMPORTANT:
 #     Only COMPLETED candles are returned.
@@ -25,8 +29,14 @@ import pandas as pd
 # =========================================================
 
 
-BASE_URL = "https://contract.mexc.com"
+BASE_URL = "https://api.bybit.com"
 
+CATEGORY = "linear"
+
+
+# =========================================================
+# INTERVALS
+# =========================================================
 
 INTERVAL_SECONDS = {
 
@@ -40,6 +50,18 @@ INTERVAL_SECONDS = {
 }
 
 
+BYBIT_INTERVALS = {
+
+    "Min1": "1",
+
+    "Min5": "5",
+
+    "Min15": "15",
+
+    "Hour4": "240",
+}
+
+
 # =========================================================
 # SESSION
 # =========================================================
@@ -49,7 +71,7 @@ SESSION = requests.Session()
 SESSION.headers.update({
 
     "User-Agent":
-        "NextCandleAI/3.1",
+        "NextCandleAI/4.0",
 
     "Accept":
         "application/json",
@@ -72,7 +94,56 @@ def _validate_interval(interval):
 
 
 # =========================================================
-# REQUEST MEXC FUTURES DATA
+# NORMALIZE SYMBOL
+# =========================================================
+
+def _normalize_symbol(symbol):
+
+    if symbol is None:
+
+        raise ValueError(
+            "Symbol cannot be None."
+        )
+
+    symbol = (
+        str(symbol)
+        .upper()
+        .strip()
+    )
+
+    # -----------------------------------------------------
+    # Allow users to type:
+    #
+    # CYSUSDT
+    # CYSUSDT.P
+    # CYS_USDT
+    #
+    # Bybit linear uses:
+    #
+    # CYSUSDT
+    # -----------------------------------------------------
+
+    symbol = symbol.replace(
+        ".P",
+        "",
+    )
+
+    symbol = symbol.replace(
+        "_",
+        "",
+    )
+
+    if not symbol:
+
+        raise ValueError(
+            "Symbol cannot be empty."
+        )
+
+    return symbol
+
+
+# =========================================================
+# BYBIT V5 REQUEST
 # =========================================================
 
 def _request(
@@ -84,20 +155,30 @@ def _request(
 ):
 
     url = (
-        f"{BASE_URL}/api/v1/contract/kline/"
-        f"{symbol}"
+        f"{BASE_URL}/v5/market/kline"
     )
 
     params = {
 
+        "category":
+            CATEGORY,
+
+        "symbol":
+            symbol,
+
         "interval":
-            interval,
+            BYBIT_INTERVALS[
+                interval
+            ],
 
         "start":
             int(start),
 
         "end":
             int(end),
+
+        "limit":
+            1000,
     }
 
     last_error = None
@@ -116,49 +197,71 @@ def _request(
 
             payload = response.json()
 
-            if not payload.get("success"):
+            ret_code = payload.get(
+                "retCode"
+            )
+
+            if ret_code != 0:
 
                 raise RuntimeError(
-                    "MEXC returned error "
-                    f"{payload.get('code')}: "
-                    f"{payload.get('message', 'Unknown error')}"
+                    "Bybit returned error "
+                    f"{ret_code}: "
+                    f"{payload.get('retMsg', 'Unknown error')}"
                 )
 
-            data = payload.get("data")
+            result = payload.get(
+                "result",
+                {},
+            )
+
+            data = result.get(
+                "list",
+                [],
+            )
 
             if not data:
 
                 return pd.DataFrame()
 
-            if not data.get("time"):
+            rows = []
+
+            for candle in data:
+
+                if len(candle) < 7:
+
+                    continue
+
+                rows.append({
+
+                    "timestamp":
+                        candle[0],
+
+                    "open":
+                        candle[1],
+
+                    "high":
+                        candle[2],
+
+                    "low":
+                        candle[3],
+
+                    "close":
+                        candle[4],
+
+                    "volume":
+                        candle[5],
+
+                    "turnover":
+                        candle[6],
+                })
+
+            if not rows:
 
                 return pd.DataFrame()
 
-            frame = pd.DataFrame({
-
-                "timestamp":
-                    data["time"],
-
-                "open":
-                    data["open"],
-
-                "high":
-                    data["high"],
-
-                "low":
-                    data["low"],
-
-                "close":
-                    data["close"],
-
-                "volume":
-                    data["vol"],
-
-                "turnover":
-                    data["amount"],
-            })
-
-            return frame
+            return pd.DataFrame(
+                rows
+            )
 
         except Exception as exc:
 
@@ -200,12 +303,15 @@ def _normalize(frame):
     x = frame.copy()
 
     # -----------------------------------------------------
-    # MEXC contract timestamps are Unix seconds.
+    # Bybit V5 timestamps are milliseconds.
     # -----------------------------------------------------
 
     x["timestamp"] = pd.to_datetime(
-        x["timestamp"],
-        unit="s",
+        pd.to_numeric(
+            x["timestamp"],
+            errors="coerce",
+        ),
+        unit="ms",
         utc=True,
     )
 
@@ -280,7 +386,7 @@ def _remove_forming_candle(
     )
 
     # -----------------------------------------------------
-    # Beginning of the CURRENT candle.
+    # Start of the CURRENT candle.
     # -----------------------------------------------------
 
     current_period_start = (
@@ -294,8 +400,8 @@ def _remove_forming_candle(
     )
 
     # -----------------------------------------------------
-    # Keep ONLY candles that started before the
-    # currently forming candle.
+    # ONLY candles that started before the current candle
+    # are completed.
     # -----------------------------------------------------
 
     completed = frame[
@@ -315,15 +421,13 @@ def _remove_forming_candle(
 # =========================================================
 
 def fetch_klines(
-    symbol="CYS_USDT",
+    symbol="CYSUSDT",
     interval="Min15",
     total=2500,
 ):
 
-    symbol = (
+    symbol = _normalize_symbol(
         symbol
-        .upper()
-        .strip()
     )
 
     _validate_interval(
@@ -345,24 +449,32 @@ def fetch_klines(
         time.time()
     )
 
-    max_per_request = 2000
+    # -----------------------------------------------------
+    # Bybit maximum kline page size is 1000.
+    # -----------------------------------------------------
+
+    max_per_request = 1000
 
     # -----------------------------------------------------
-    # Request enough history to obtain the desired number
-    # of COMPLETED candles.
+    # Ask for slightly more history than necessary because
+    # the current forming candle will be removed later.
     # -----------------------------------------------------
 
     target_start = (
         now
         - (
-            total * seconds
+            (total + 2)
+            * seconds
         )
-        - seconds
     )
 
-    chunks = []
+    target_start = (
+        target_start // seconds
+    ) * seconds
 
     cursor_end = now
+
+    chunks = []
 
     request_count = 0
 
@@ -374,7 +486,8 @@ def fetch_klines(
             - (
                 max_per_request
                 * seconds
-            ),
+            )
+            + 1,
         )
 
         chunk = _request(
@@ -398,9 +511,6 @@ def fetch_klines(
 
         # -------------------------------------------------
         # Move backwards.
-        #
-        # Subtract one second to avoid repeatedly requesting
-        # the same boundary candle.
         # -------------------------------------------------
 
         cursor_end = (
@@ -474,14 +584,12 @@ def fetch_klines(
 # =========================================================
 
 def fetch_multi_timeframe(
-    symbol="CYS_USDT",
+    symbol="CYSUSDT",
     history_15m=2500,
 ):
 
-    symbol = (
+    symbol = _normalize_symbol(
         symbol
-        .upper()
-        .strip()
     )
 
     candles_15m = int(
@@ -491,8 +599,7 @@ def fetch_multi_timeframe(
     # -----------------------------------------------------
     # 5M:
     #
-    # Three 5M candles per 15M candle.
-    # Extra history is added for indicators.
+    # 3 x 5M candles = 1 x 15M candle.
     # -----------------------------------------------------
 
     candles_5m = int(
@@ -503,8 +610,7 @@ def fetch_multi_timeframe(
     # -----------------------------------------------------
     # 1M:
     #
-    # Fifteen 1M candles per 15M candle.
-    # Extra history is added for indicators.
+    # 15 x 1M candles = 1 x 15M candle.
     # -----------------------------------------------------
 
     candles_1m = int(
@@ -515,9 +621,7 @@ def fetch_multi_timeframe(
     # -----------------------------------------------------
     # 4H:
     #
-    # Sixteen 15M candles per 4H candle.
-    # At least 300 candles are requested so that the
-    # 100-period 4H indicators have sufficient history.
+    # 16 x 15M candles = 1 x 4H candle.
     # -----------------------------------------------------
 
     candles_4h = max(
@@ -580,6 +684,10 @@ def fetch_multi_timeframe(
         interval="Hour4",
 
         total=candles_4h,
+    )
+
+    validate_timeframe_data(
+        data
     )
 
     return data
@@ -648,10 +756,6 @@ def validate_timeframe_data(
             raise ValueError(
                 f"{timeframe} data is empty."
             )
-
-        # -------------------------------------------------
-        # Required columns.
-        # -------------------------------------------------
 
         missing_columns = [
 
@@ -727,7 +831,7 @@ def validate_timeframe_data(
             )
 
         # -------------------------------------------------
-        # OHLC relationship validation.
+        # OHLC validation.
         # -------------------------------------------------
 
         invalid_ohlc = (
@@ -765,35 +869,29 @@ def validate_timeframe_data(
             )
 
     # -----------------------------------------------------
-    # Make sure the latest candle returned for each
-    # timeframe is actually completed.
+    # Verify latest candle is completed.
     # -----------------------------------------------------
 
     now = int(
         time.time()
     )
 
+    seconds_map = {
+
+        "1m": 60,
+
+        "5m": 5 * 60,
+
+        "15m": 15 * 60,
+
+        "4h": 4 * 60 * 60,
+    }
+
     for timeframe, frame in data.items():
 
-        if timeframe == "1m":
-
-            seconds = 60
-
-        elif timeframe == "5m":
-
-            seconds = 5 * 60
-
-        elif timeframe == "15m":
-
-            seconds = 15 * 60
-
-        elif timeframe == "4h":
-
-            seconds = 4 * 60 * 60
-
-        else:
-
-            continue
+        seconds = seconds_map[
+            timeframe
+        ]
 
         current_period_start = (
             now // seconds
@@ -824,7 +922,7 @@ def validate_timeframe_data(
 # =========================================================
 
 def get_latest_completed_candle(
-    symbol="CYS_USDT",
+    symbol="CYSUSDT",
     interval="Min15",
 ):
 
@@ -847,25 +945,28 @@ def get_latest_completed_candle(
 
 
 # =========================================================
-# LATEST PRICE
+# LATEST BYBIT PRICE
 # =========================================================
 
 def get_latest_price(
-    symbol="CYS_USDT",
+    symbol="CYSUSDT",
 ):
 
-    symbol = (
+    symbol = _normalize_symbol(
         symbol
-        .upper()
-        .strip()
     )
 
     url = (
-        f"{BASE_URL}/api/v1/contract/ticker"
+        f"{BASE_URL}/v5/market/tickers"
     )
 
     params = {
-        "symbol": symbol,
+
+        "category":
+            CATEGORY,
+
+        "symbol":
+            symbol,
     }
 
     last_error = None
@@ -884,31 +985,42 @@ def get_latest_price(
 
             payload = response.json()
 
-            if not payload.get("success"):
+            ret_code = payload.get(
+                "retCode"
+            )
+
+            if ret_code != 0:
 
                 raise RuntimeError(
-                    "MEXC ticker request failed: "
-                    f"{payload.get('message', 'Unknown error')}"
+                    "Bybit ticker request failed: "
+                    f"{ret_code} — "
+                    f"{payload.get('retMsg', 'Unknown error')}"
                 )
 
-            data = payload.get(
-                "data"
+            result = payload.get(
+                "result",
+                {},
+            )
+
+            data = result.get(
+                "list",
+                [],
             )
 
             if not data:
 
                 raise RuntimeError(
-                    "MEXC returned empty ticker data."
+                    "Bybit returned empty ticker data."
                 )
 
-            price = data.get(
+            price = data[0].get(
                 "lastPrice"
             )
 
             if price is None:
 
                 raise RuntimeError(
-                    "MEXC ticker response "
+                    "Bybit ticker response "
                     "does not contain lastPrice."
                 )
 
