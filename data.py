@@ -4,57 +4,42 @@ import pandas as pd
 
 
 # ============================================================
-# NextCandle AI — MARKET DATA ENGINE V6
+# NextCandle AI — MEXC FUTURES DATA ENGINE
 #
 # MARKET:
-#     Bybit USDT Perpetual
+#     CYS_USDT
 #
-# SYMBOL:
-#     CYSUSDT
-#
-# PRIMARY PREDICTION:
+# PRIMARY:
 #     NEXT 15-MINUTE CANDLE
 #
-# EVIDENCE:
+# TIMEFRAMES:
 #     1M + 5M + 15M + 4H
 #
-# IMPORTANT:
-#     Only completed candles are returned.
+# MEXC FUTURES API
 # ============================================================
 
 
-BASE_URL = "https://api.bybit.com"
-CATEGORY = "linear"
-
-
-# ============================================================
-# INTERVALS
-# ============================================================
+BASE_URL = "https://api.mexc.com"
 
 INTERVAL_SECONDS = {
     "Min1": 60,
-    "Min5": 5 * 60,
-    "Min15": 15 * 60,
-    "Hour4": 4 * 60 * 60,
+    "Min5": 300,
+    "Min15": 900,
+    "Hour4": 14400,
 }
 
-
-BYBIT_INTERVALS = {
-    "Min1": "1",
-    "Min5": "5",
-    "Min15": "15",
-    "Hour4": "240",
+MEXC_INTERVALS = {
+    "Min1": "Min1",
+    "Min5": "Min5",
+    "Min15": "Min15",
+    "Hour4": "Hour4",
 }
 
-
-# ============================================================
-# HTTP SESSION
-# ============================================================
 
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 NextCandleAI/6.0",
+    "User-Agent": "Mozilla/5.0",
     "Accept": "application/json",
 })
 
@@ -68,9 +53,7 @@ def _validate_interval(interval):
     if interval not in INTERVAL_SECONDS:
 
         raise ValueError(
-            f"Unsupported interval: {interval}. "
-            f"Supported intervals: "
-            f"{', '.join(INTERVAL_SECONDS.keys())}"
+            f"Unsupported interval: {interval}"
         )
 
 
@@ -88,14 +71,9 @@ def _normalize_symbol(symbol):
 
     symbol = str(symbol).upper().strip()
 
-    # Accept:
-    # CYSUSDT
-    # CYS_USDT
-    # CYSUSDT.P
-    # CYS_USDT.P
-
-    symbol = symbol.replace("_", "")
     symbol = symbol.replace(".P", "")
+    symbol = symbol.replace("_", "")
+    symbol = symbol.replace("-", "")
 
     if not symbol:
 
@@ -103,11 +81,25 @@ def _normalize_symbol(symbol):
             "Symbol cannot be empty."
         )
 
+    # --------------------------------------------------------
+    # MEXC Futures uses CYS_USDT
+    # --------------------------------------------------------
+
+    if symbol == "CYSUSDT":
+
+        return "CYS_USDT"
+
+    if symbol.endswith("USDT"):
+
+        base = symbol[:-4]
+
+        return f"{base}_USDT"
+
     return symbol
 
 
 # ============================================================
-# REQUEST BYBIT V5
+# REQUEST
 # ============================================================
 
 def _request(
@@ -116,20 +108,18 @@ def _request(
     start,
     end,
     limit=1000,
-    retries=4,
+    retries=5,
 ):
 
     url = (
-        f"{BASE_URL}/v5/market/kline"
+        f"{BASE_URL}/api/v1/contract/kline/"
+        f"{symbol}"
     )
 
     params = {
-        "category": CATEGORY,
-        "symbol": symbol,
         "interval": interval,
         "start": int(start),
         "end": int(end),
-        "limit": int(limit),
     }
 
     last_error = None
@@ -144,81 +134,133 @@ def _request(
                 timeout=30,
             )
 
-            # ------------------------------------------------
-            # HTTP 403
-            # ------------------------------------------------
-
-            if response.status_code == 403:
-
-                raise RuntimeError(
-                    "Bybit HTTP 403 Forbidden. "
-                    "The GitHub Actions runner IP may be "
-                    "blocked by Bybit."
-                )
-
             response.raise_for_status()
 
             payload = response.json()
 
-            ret_code = payload.get(
-                "retCode"
-            )
+            # ------------------------------------------------
+            # MEXC can return data directly or inside success
+            # ------------------------------------------------
 
-            if ret_code != 0:
+            if isinstance(payload, dict):
 
-                raise RuntimeError(
-                    "Bybit returned error "
-                    f"{ret_code}: "
-                    f"{payload.get('retMsg', 'Unknown error')}"
+                if payload.get("success") is False:
+
+                    raise RuntimeError(
+                        "MEXC returned an error: "
+                        f"{payload}"
+                    )
+
+                data = payload.get(
+                    "data",
+                    payload,
                 )
 
-            rows = (
-                payload
-                .get("result", {})
-                .get("list", [])
+            else:
+
+                data = payload
+
+            # ------------------------------------------------
+            # MEXC futures kline format
+            #
+            # {
+            #   time: [],
+            #   open: [],
+            #   close: [],
+            #   high: [],
+            #   low: [],
+            #   vol: [],
+            #   amount: []
+            # }
+            # ------------------------------------------------
+
+            if not isinstance(data, dict):
+
+                return pd.DataFrame()
+
+            timestamps = data.get(
+                "time",
+                [],
             )
 
-            if not rows:
+            opens = data.get(
+                "open",
+                [],
+            )
+
+            closes = data.get(
+                "close",
+                [],
+            )
+
+            highs = data.get(
+                "high",
+                [],
+            )
+
+            lows = data.get(
+                "low",
+                [],
+            )
+
+            volumes = data.get(
+                "vol",
+                [],
+            )
+
+            amounts = data.get(
+                "amount",
+                [],
+            )
+
+            if not timestamps:
 
                 return pd.DataFrame()
 
             records = []
 
-            for row in rows:
+            count = min(
+                len(timestamps),
+                len(opens),
+                len(closes),
+                len(highs),
+                len(lows),
+                len(volumes),
+            )
 
-                if len(row) < 7:
-
-                    continue
+            for i in range(count):
 
                 try:
 
                     records.append({
-
-                        "timestamp":
-                            int(row[0]),
-
-                        "open":
-                            float(row[1]),
-
-                        "high":
-                            float(row[2]),
-
-                        "low":
-                            float(row[3]),
-
-                        "close":
-                            float(row[4]),
-
-                        "volume":
-                            float(row[5]),
-
-                        "turnover":
-                            float(row[6]),
+                        "timestamp": int(
+                            timestamps[i]
+                        ),
+                        "open": float(
+                            opens[i]
+                        ),
+                        "high": float(
+                            highs[i]
+                        ),
+                        "low": float(
+                            lows[i]
+                        ),
+                        "close": float(
+                            closes[i]
+                        ),
+                        "volume": float(
+                            volumes[i]
+                        ),
+                        "turnover": (
+                            float(amounts[i])
+                            if i < len(amounts)
+                            else 0.0
+                        ),
                     })
 
                 except (
-                    TypeError,
                     ValueError,
+                    TypeError,
                 ):
 
                     continue
@@ -227,9 +269,7 @@ def _request(
 
                 return pd.DataFrame()
 
-            return pd.DataFrame(
-                records
-            )
+            return pd.DataFrame(records)
 
         except Exception as exc:
 
@@ -237,12 +277,8 @@ def _request(
 
             if attempt < retries - 1:
 
-                wait_time = (
-                    2.0 * (attempt + 1)
-                )
-
                 time.sleep(
-                    wait_time
+                    2 + attempt * 2
                 )
 
     raise RuntimeError(
@@ -274,9 +310,13 @@ def _normalize(frame):
 
     x = frame.copy()
 
+    # --------------------------------------------------------
+    # MEXC timestamps are Unix seconds.
+    # --------------------------------------------------------
+
     x["timestamp"] = pd.to_datetime(
         x["timestamp"],
-        unit="ms",
+        unit="s",
         utc=True,
     )
 
@@ -298,6 +338,16 @@ def _normalize(frame):
 
     x = (
         x
+        .sort_values("timestamp")
+        .drop_duplicates(
+            "timestamp",
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
+
+    x = (
+        x
         .replace(
             [float("inf"), float("-inf")],
             pd.NA,
@@ -312,11 +362,6 @@ def _normalize(frame):
                 "volume",
             ]
         )
-        .sort_values("timestamp")
-        .drop_duplicates(
-            "timestamp",
-            keep="last",
-        )
         .reset_index(drop=True)
     )
 
@@ -324,7 +369,7 @@ def _normalize(frame):
 
 
 # ============================================================
-# REMOVE FORMING CANDLE
+# REMOVE CURRENTLY FORMING CANDLE
 # ============================================================
 
 def _remove_forming_candle(
@@ -340,9 +385,7 @@ def _remove_forming_candle(
         interval
     ]
 
-    now = int(
-        time.time()
-    )
+    now = int(time.time())
 
     current_period_start = (
         now // seconds
@@ -367,7 +410,7 @@ def _remove_forming_candle(
 
 
 # ============================================================
-# FETCH HISTORICAL CANDLES
+# FETCH KLINES
 # ============================================================
 
 def fetch_klines(
@@ -396,30 +439,25 @@ def fetch_klines(
         interval
     ]
 
+    now = int(time.time())
+
+    # --------------------------------------------------------
+    # MEXC futures API supports historical time ranges.
+    # We request chunks to build the required history.
+    # --------------------------------------------------------
+
     max_per_request = 1000
 
-    interval_ms = (
-        seconds * 1000
-    )
-
-    now = int(
-        time.time()
-    )
-
-    # --------------------------------------------------------
-    # Request slightly more than required so that the current
-    # forming candle can safely be removed.
-    # --------------------------------------------------------
-
-    target_end = (
-        now * 1000
-    )
+    target_end = now
 
     target_start = (
         now
-        - (total * seconds)
-        - (2 * seconds)
-    ) * 1000
+        - (
+            total
+            * seconds
+        )
+        - seconds
+    )
 
     chunks = []
 
@@ -434,22 +472,17 @@ def fetch_klines(
             cursor_end
             - (
                 max_per_request
-                * interval_ms
+                * seconds
             ),
         )
 
         chunk = _request(
-
             symbol=symbol,
-
-            interval=BYBIT_INTERVALS[
+            interval=MEXC_INTERVALS[
                 interval
             ],
-
             start=cursor_start,
-
             end=cursor_end,
-
             limit=max_per_request,
         )
 
@@ -461,11 +494,6 @@ def fetch_klines(
                 chunk
             )
 
-        # ----------------------------------------------------
-        # Move backwards without overlapping the previous
-        # request.
-        # ----------------------------------------------------
-
         cursor_end = (
             cursor_start - 1
         )
@@ -474,13 +502,10 @@ def fetch_klines(
 
             raise RuntimeError(
                 "Historical download required "
-                "an unexpectedly large number "
-                "of requests."
+                "too many requests."
             )
 
-        time.sleep(
-            0.10
-        )
+        time.sleep(0.15)
 
     if not chunks:
 
@@ -523,7 +548,7 @@ def fetch_klines(
 
 
 # ============================================================
-# MULTI-TIMEFRAME DOWNLOAD
+# FETCH ALL TIMEFRAMES
 # ============================================================
 
 def fetch_multi_timeframe(
@@ -539,42 +564,15 @@ def fetch_multi_timeframe(
         history_15m
     )
 
-    # --------------------------------------------------------
-    # 5M
-    #
-    # 3 x 15M candles per hour relationship.
-    # --------------------------------------------------------
-
     candles_5m = (
         candles_15m * 3
         + 300
     )
 
-    # --------------------------------------------------------
-    # 1M
-    #
-    # IMPORTANT:
-    #
-    # We do NOT need 15 x the entire 15M history.
-    #
-    # The 1M data is immediate microstructure evidence.
-    # A compact recent window is enough for the features.
-    #
-    # This dramatically reduces API requests and avoids
-    # unnecessary GitHub runner traffic.
-    # --------------------------------------------------------
-
-    candles_1m = max(
-        3000,
-        min(
-            7500,
-            candles_15m * 2,
-        ),
+    candles_1m = (
+        candles_15m * 15
+        + 1500
     )
-
-    # --------------------------------------------------------
-    # 4H
-    # --------------------------------------------------------
 
     candles_4h = max(
         300,
@@ -585,43 +583,9 @@ def fetch_multi_timeframe(
 
     data = {}
 
-    # --------------------------------------------------------
-    # 15M PRIMARY DATA
-    #
-    # Download this first because this is the actual
-    # prediction timeframe.
-    # --------------------------------------------------------
-
     print(
-        "[NextCandle AI] Downloading 15M candles..."
-    )
-
-    data["15m"] = fetch_klines(
-        symbol=symbol,
-        interval="Min15",
-        total=candles_15m,
-    )
-
-    # --------------------------------------------------------
-    # 5M
-    # --------------------------------------------------------
-
-    print(
-        "[NextCandle AI] Downloading 5M candles..."
-    )
-
-    data["5m"] = fetch_klines(
-        symbol=symbol,
-        interval="Min5",
-        total=candles_5m,
-    )
-
-    # --------------------------------------------------------
-    # 1M
-    # --------------------------------------------------------
-
-    print(
-        "[NextCandle AI] Downloading recent 1M candles..."
+        "[NextCandle AI] "
+        "Downloading 1M candles..."
     )
 
     data["1m"] = fetch_klines(
@@ -630,12 +594,31 @@ def fetch_multi_timeframe(
         total=candles_1m,
     )
 
-    # --------------------------------------------------------
-    # 4H
-    # --------------------------------------------------------
+    print(
+        "[NextCandle AI] "
+        "Downloading 5M candles..."
+    )
+
+    data["5m"] = fetch_klines(
+        symbol=symbol,
+        interval="Min5",
+        total=candles_5m,
+    )
 
     print(
-        "[NextCandle AI] Downloading 4H candles..."
+        "[NextCandle AI] "
+        "Downloading 15M candles..."
+    )
+
+    data["15m"] = fetch_klines(
+        symbol=symbol,
+        interval="Min15",
+        total=candles_15m,
+    )
+
+    print(
+        "[NextCandle AI] "
+        "Downloading 4H candles..."
     )
 
     data["4h"] = fetch_klines(
@@ -652,11 +635,11 @@ def fetch_multi_timeframe(
 
 
 # ============================================================
-# DATA QUALITY CHECK
+# VALIDATE TIMEFRAME DATA
 # ============================================================
 
 def validate_timeframe_data(
-    data,
+    data
 ):
 
     if data is None:
@@ -692,13 +675,6 @@ def validate_timeframe_data(
         "close",
         "volume",
     ]
-
-    timeframe_intervals = {
-        "1m": "Min1",
-        "5m": "Min5",
-        "15m": "Min15",
-        "4h": "Hour4",
-    }
 
     for timeframe in required:
 
@@ -770,16 +746,23 @@ def validate_timeframe_data(
             )
 
         invalid_ohlc = (
-
             (frame["high"] < frame["low"])
-
-            | (frame["high"] < frame["open"])
-
-            | (frame["high"] < frame["close"])
-
-            | (frame["low"] > frame["open"])
-
-            | (frame["low"] > frame["close"])
+            | (
+                frame["high"]
+                < frame["open"]
+            )
+            | (
+                frame["high"]
+                < frame["close"]
+            )
+            | (
+                frame["low"]
+                > frame["open"]
+            )
+            | (
+                frame["low"]
+                > frame["close"]
+            )
         )
 
         if invalid_ohlc.any():
@@ -799,12 +782,17 @@ def validate_timeframe_data(
             )
 
     # --------------------------------------------------------
-    # Verify that every latest candle is completed.
+    # Verify no currently-forming candles
     # --------------------------------------------------------
 
-    now = int(
-        time.time()
-    )
+    now = int(time.time())
+
+    timeframe_intervals = {
+        "1m": "Min1",
+        "5m": "Min5",
+        "15m": "Min15",
+        "4h": "Hour4",
+    }
 
     for timeframe, frame in data.items():
 
@@ -828,7 +816,10 @@ def validate_timeframe_data(
             "timestamp"
         ].iloc[-1]
 
-        if latest_timestamp >= current_period_start:
+        if (
+            latest_timestamp
+            >= current_period_start
+        ):
 
             raise ValueError(
                 f"{timeframe} contains "
@@ -859,7 +850,9 @@ def get_latest_completed_candle(
             "No completed candles available."
         )
 
-    return frame.iloc[-1].copy()
+    return frame.iloc[
+        -1
+    ].copy()
 
 
 # ============================================================
@@ -875,17 +868,16 @@ def get_latest_price(
     )
 
     url = (
-        f"{BASE_URL}/v5/market/tickers"
+        f"{BASE_URL}/api/v1/contract/ticker"
     )
 
     params = {
-        "category": CATEGORY,
         "symbol": symbol,
     }
 
     last_error = None
 
-    for attempt in range(4):
+    for attempt in range(5):
 
         try:
 
@@ -895,63 +887,71 @@ def get_latest_price(
                 timeout=20,
             )
 
-            if response.status_code == 403:
-
-                raise RuntimeError(
-                    "Bybit HTTP 403 Forbidden. "
-                    "The GitHub Actions runner IP may "
-                    "be blocked by Bybit."
-                )
-
             response.raise_for_status()
 
             payload = response.json()
 
-            if payload.get(
-                "retCode"
-            ) != 0:
+            if (
+                isinstance(payload, dict)
+                and payload.get("success")
+                is False
+            ):
 
                 raise RuntimeError(
-                    "Bybit ticker request failed: "
-                    f"{payload.get('retMsg', 'Unknown error')}"
+                    "MEXC ticker request failed: "
+                    f"{payload}"
                 )
 
-            ticker_list = (
-                payload
-                .get("result", {})
-                .get("list", [])
+            data = payload.get(
+                "data",
+                payload,
             )
 
-            if not ticker_list:
+            if isinstance(
+                data,
+                list,
+            ):
+
+                if not data:
+
+                    raise RuntimeError(
+                        "MEXC returned an empty "
+                        "ticker response."
+                    )
+
+                data = data[0]
+
+            if not isinstance(
+                data,
+                dict,
+            ):
 
                 raise RuntimeError(
-                    "Bybit returned an empty "
-                    "ticker response."
+                    "Invalid MEXC ticker response."
                 )
 
-            price = ticker_list[0].get(
-                "lastPrice"
+            price = (
+                data.get("lastPrice")
+                or data.get("last")
             )
 
             if price is None:
 
                 raise RuntimeError(
-                    "Bybit ticker response "
-                    "does not contain lastPrice."
+                    "MEXC ticker response "
+                    "does not contain a last price."
                 )
 
-            return float(
-                price
-            )
+            return float(price)
 
         except Exception as exc:
 
             last_error = exc
 
-            if attempt < 3:
+            if attempt < 4:
 
                 time.sleep(
-                    1.5 * (attempt + 1)
+                    2 + attempt
                 )
 
     raise RuntimeError(
