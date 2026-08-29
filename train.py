@@ -16,12 +16,12 @@ from model import (
 
 
 # ============================================================
-# NextCandle AI - TRAINING ENGINE
+# NextCandle AI - TRAINING ENGINE V3.1
 #
 # Market:
 #     CYSUSDT.P
 #
-# MEXC API symbol:
+# API symbol:
 #     CYS_USDT
 #
 # Prediction:
@@ -35,8 +35,12 @@ from model import (
 #     1 = NEUTRAL
 #     2 = BULLISH
 #
-# Training is chronological.
-# No random train/test split.
+# Training:
+#     Chronological 80/20 split
+#
+# IMPORTANT:
+#     No random train/test split.
+#     The future is never allowed to leak into training.
 # ============================================================
 
 
@@ -64,57 +68,107 @@ def log(message):
 
 
 # ============================================================
-# DATA QUALITY
+# DATASET VALIDATION
 # ============================================================
 
-def validate_training_dataset(X, y, structure_y=None):
+def validate_training_dataset(
+    X,
+    y,
+    structure_y=None,
+):
 
     if X is None or X.empty:
-        raise ValueError("Feature dataset is empty.")
 
-    if y is None or len(y) == 0:
-        raise ValueError("Target dataset is empty.")
-
-    if len(X) != len(y):
         raise ValueError(
-            f"Feature/target mismatch: {len(X)} != {len(y)}"
+            "Feature dataset is empty."
         )
 
-    if X.index.duplicated().any():
+    if y is None or len(y) == 0:
+
         raise ValueError(
-            "Feature dataset contains duplicate timestamps."
+            "Direction target dataset is empty."
+        )
+
+    if len(X) != len(y):
+
+        raise ValueError(
+            "Feature/target mismatch: "
+            f"{len(X)} != {len(y)}"
+        )
+
+    # --------------------------------------------------------
+    # Timestamp checks
+    # --------------------------------------------------------
+
+    if X.index.duplicated().any():
+
+        raise ValueError(
+            "Feature dataset contains "
+            "duplicate timestamps."
         )
 
     if not X.index.is_monotonic_increasing:
+
         raise ValueError(
-            "Feature timestamps are not chronologically ordered."
+            "Feature timestamps are not "
+            "chronologically ordered."
         )
+
+    # --------------------------------------------------------
+    # Target checks
+    # --------------------------------------------------------
 
     if y.isna().any():
+
         raise ValueError(
-            "Target contains missing values."
+            "Direction target contains "
+            "missing values."
         )
 
-    classes = sorted(
-        y.astype(int).unique().tolist()
+    y_classes = sorted(
+        y.astype(int)
+        .unique()
+        .tolist()
     )
 
-    if len(classes) < 2:
+    invalid_classes = [
+        value
+        for value in y_classes
+        if value not in [0, 1, 2]
+    ]
+
+    if invalid_classes:
+
         raise ValueError(
-            "Training data contains fewer than two target classes."
+            "Invalid direction target classes: "
+            f"{invalid_classes}"
         )
+
+    if len(y_classes) < 2:
+
+        raise ValueError(
+            "Training data contains fewer "
+            "than two direction classes."
+        )
+
+    # --------------------------------------------------------
+    # Structure target checks
+    # --------------------------------------------------------
 
     if structure_y is not None:
 
         if len(structure_y) != len(X):
+
             raise ValueError(
                 "Feature/structure-target mismatch: "
                 f"{len(X)} != {len(structure_y)}"
             )
 
         if structure_y.isna().any():
+
             raise ValueError(
-                "Structure target contains missing values."
+                "Structure target contains "
+                "missing values."
             )
 
     return True
@@ -131,8 +185,10 @@ def chronological_split(
 ):
 
     if not 0.5 <= train_ratio < 1.0:
+
         raise ValueError(
-            "train_ratio must be between 0.5 and 1.0."
+            "train_ratio must be between "
+            "0.5 and 1.0."
         )
 
     split_index = int(
@@ -140,20 +196,32 @@ def chronological_split(
     )
 
     if split_index <= 0:
+
         raise ValueError(
             "Training split is empty."
         )
 
     if split_index >= len(X):
+
         raise ValueError(
             "Validation split is empty."
         )
 
-    X_train = X.iloc[:split_index].copy()
-    X_test = X.iloc[split_index:].copy()
+    X_train = X.iloc[
+        :split_index
+    ].copy()
 
-    y_train = y.iloc[:split_index].copy()
-    y_test = y.iloc[split_index:].copy()
+    X_test = X.iloc[
+        split_index:
+    ].copy()
+
+    y_train = y.iloc[
+        :split_index
+    ].copy()
+
+    y_test = y.iloc[
+        split_index:
+    ].copy()
 
     return (
         X_train,
@@ -194,16 +262,19 @@ def class_distribution(y):
             )
         )
 
-        result[names[class_id]] = {
+        result[
+            names[class_id]
+        ] = {
+
             "count": count,
-            "percentage": (
+
+            "percentage":
                 round(
                     count / total * 100,
                     2,
                 )
                 if total
-                else 0.0
-            ),
+                else 0.0,
         }
 
     return result
@@ -213,7 +284,9 @@ def class_distribution(y):
 # STRUCTURE CLASS DISTRIBUTION
 # ============================================================
 
-def structure_class_distribution(structure_y):
+def structure_class_distribution(
+    structure_y,
+):
 
     counts = (
         structure_y.astype(int)
@@ -224,12 +297,19 @@ def structure_class_distribution(structure_y):
     total = len(structure_y)
 
     names = {
+
         0: "OTHER",
+
         1: "HAMMER_LIKE",
+
         2: "SHOOTING_STAR_LIKE",
+
         3: "DOJI_LIKE",
+
         4: "STRONG_BULLISH",
+
         5: "STRONG_BEARISH",
+
         6: "HANGING_MAN_LIKE",
     }
 
@@ -245,42 +325,62 @@ def structure_class_distribution(structure_y):
         )
 
         result[name] = {
+
             "count": count,
-            "percentage": (
+
+            "percentage":
                 round(
                     count / total * 100,
                     2,
                 )
                 if total
-                else 0.0
-            ),
+                else 0.0,
         }
 
     return result
 
 
 # ============================================================
-# MAIN TRAINING
+# MAIN TRAINING PIPELINE
 # ============================================================
 
 def main():
 
-    log("================================================")
-    log("Starting NextCandle AI training pipeline.")
-    log("================================================")
+    log(
+        "================================================"
+    )
 
-    log(f"Market: {DISPLAY_SYMBOL}")
-    log(f"MEXC symbol: {SYMBOL}")
-    log("Target: next 15-minute candle")
-    log("Evidence: 1M + 5M + 15M + 4H")
+    log(
+        "Starting NextCandle AI training pipeline."
+    )
 
-    # --------------------------------------------------------
+    log(
+        "================================================"
+    )
+
+    log(
+        f"Market: {DISPLAY_SYMBOL}"
+    )
+
+    log(
+        f"API symbol: {SYMBOL}"
+    )
+
+    log(
+        "Prediction: NEXT 15-minute candle"
+    )
+
+    log(
+        "Evidence: 1M + 5M + 15M + 4H"
+    )
+
+    # ========================================================
     # DOWNLOAD HISTORICAL DATA
-    # --------------------------------------------------------
+    # ========================================================
 
     log(
         f"Downloading approximately "
-        f"{HISTORY_15M} historical 15m candles..."
+        f"{HISTORY_15M} historical 15M candles..."
     )
 
     market_data = fetch_multi_timeframe(
@@ -288,11 +388,17 @@ def main():
         history_15m=HISTORY_15M,
     )
 
-    log("Historical data downloaded.")
+    log(
+        "Historical market data downloaded."
+    )
 
-    # --------------------------------------------------------
+    # ========================================================
     # VALIDATE RAW DATA
-    # --------------------------------------------------------
+    # ========================================================
+
+    log(
+        "Validating downloaded market data..."
+    )
 
     validate_timeframe_data(
         market_data
@@ -305,9 +411,9 @@ def main():
             f"{len(frame)} completed candles"
         )
 
-    # --------------------------------------------------------
-    # BUILD FEATURES
-    # --------------------------------------------------------
+    # ========================================================
+    # BUILD FEATURES + TARGETS
+    # ========================================================
 
     log(
         "Building multi-timeframe features..."
@@ -318,11 +424,21 @@ def main():
         y,
         structure_y,
     ) = prepare_training_data(
-        df_15m=market_data["15m"],
-        df_4h=market_data["4h"],
-        df_1m=market_data["1m"],
-        df_5m=market_data["5m"],
-        neutral_threshold=NEUTRAL_THRESHOLD,
+
+        df_15m=
+            market_data["15m"],
+
+        df_4h=
+            market_data["4h"],
+
+        df_1m=
+            market_data["1m"],
+
+        df_5m=
+            market_data["5m"],
+
+        neutral_threshold=
+            NEUTRAL_THRESHOLD,
     )
 
     log(
@@ -331,9 +447,9 @@ def main():
         f"{X.shape[1]} features"
     )
 
-    # --------------------------------------------------------
-    # VALIDATE DATASET
-    # --------------------------------------------------------
+    # ========================================================
+    # VALIDATE TRAINING DATASET
+    # ========================================================
 
     validate_training_dataset(
         X,
@@ -341,18 +457,33 @@ def main():
         structure_y,
     )
 
-    log("Dataset validation passed.")
+    log(
+        "Training dataset validation passed."
+    )
 
-    # --------------------------------------------------------
+    # ========================================================
     # TARGET DISTRIBUTION
-    # --------------------------------------------------------
+    # ========================================================
 
-    distribution = class_distribution(y)
+    distribution = class_distribution(
+        y
+    )
 
     log(
-        f"Direction target distribution: "
-        f"{distribution}"
+        "Direction target distribution:"
     )
+
+    for name, values in distribution.items():
+
+        log(
+            f"  {name}: "
+            f"{values['count']} "
+            f"({values['percentage']}%)"
+        )
+
+    # ========================================================
+    # STRUCTURE DISTRIBUTION
+    # ========================================================
 
     structure_distribution = (
         structure_class_distribution(
@@ -361,13 +492,22 @@ def main():
     )
 
     log(
-        f"Structure target distribution: "
-        f"{structure_distribution}"
+        "Next-candle structure distribution:"
     )
 
-    # --------------------------------------------------------
+    for name, values in (
+        structure_distribution.items()
+    ):
+
+        log(
+            f"  {name}: "
+            f"{values['count']} "
+            f"({values['percentage']}%)"
+        )
+
+    # ========================================================
     # CHRONOLOGICAL SPLIT
-    # --------------------------------------------------------
+    # ========================================================
 
     (
         X_train,
@@ -375,6 +515,7 @@ def main():
         y_train,
         y_test,
     ) = chronological_split(
+
         X,
         y,
         TRAIN_RATIO,
@@ -391,12 +532,12 @@ def main():
     )
 
     log(
-        "Chronological split confirmed."
+        "Chronological 80/20 split confirmed."
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # CHECK TRAINING CLASSES
-    # --------------------------------------------------------
+    # ========================================================
 
     train_classes = sorted(
         y_train.astype(int)
@@ -404,27 +545,39 @@ def main():
         .tolist()
     )
 
-    if len(train_classes) < 2:
-        raise ValueError(
-            "Training period contains fewer than "
-            "two direction classes."
-        )
+    test_classes = sorted(
+        y_test.astype(int)
+        .unique()
+        .tolist()
+    )
 
     log(
         f"Training direction classes: "
         f"{train_classes}"
     )
 
-    # --------------------------------------------------------
+    log(
+        f"Validation direction classes: "
+        f"{test_classes}"
+    )
+
+    if len(train_classes) < 2:
+
+        raise ValueError(
+            "Training period contains fewer "
+            "than two direction classes."
+        )
+
+    # ========================================================
     # CREATE MODEL
-    # --------------------------------------------------------
+    # ========================================================
 
     model = NextCandleModel(
         model_path=MODEL_PATH
     )
 
     log(
-        "Training gradient boosting model..."
+        "Training NextCandle gradient boosting model..."
     )
 
     model.fit(
@@ -436,13 +589,13 @@ def main():
         "Model training completed."
     )
 
-    # --------------------------------------------------------
-    # EVALUATE
-    # --------------------------------------------------------
+    # ========================================================
+    # EVALUATE ON UNSEEN DATA
+    # ========================================================
 
     log(
-        "Evaluating on unseen chronological "
-        "validation data..."
+        "Evaluating model on unseen "
+        "chronological validation data..."
     )
 
     metrics = model.evaluate(
@@ -450,15 +603,17 @@ def main():
         y_test,
     )
 
-    # --------------------------------------------------------
-    # PRINT METRICS
-    # --------------------------------------------------------
+    # ========================================================
+    # PRINT MODEL METRICS
+    # ========================================================
 
-    accuracy = metrics["accuracy"]
+    accuracy = float(
+        metrics["accuracy"]
+    )
 
-    balanced_accuracy = metrics[
-        "balanced_accuracy"
-    ]
+    balanced_accuracy = float(
+        metrics["balanced_accuracy"]
+    )
 
     log(
         f"Validation accuracy: "
@@ -475,58 +630,126 @@ def main():
         f"{metrics['log_loss']:.4f}"
     )
 
-    log("Confusion matrix:")
+    log(
+        "Confusion matrix:"
+    )
 
     print(
         np.array(
-            metrics["confusion_matrix"]
+            metrics[
+                "confusion_matrix"
+            ]
         )
     )
 
-    log("Classification report:")
-
-    print(
-        metrics["classification_report"]
+    log(
+        "Classification report:"
     )
 
-    # --------------------------------------------------------
-    # SAVE MODEL
-    # --------------------------------------------------------
+    print(
+        metrics[
+            "classification_report"
+        ]
+    )
+
+    # ========================================================
+    # SAVE TRAINED MODEL
+    # ========================================================
 
     model.save(
         MODEL_PATH
     )
 
     log(
-        f"Model saved to: "
+        f"Trained model saved to: "
         f"{MODEL_PATH}"
     )
 
-    # --------------------------------------------------------
-    # SAVE METRICS
-    # --------------------------------------------------------
+    # ========================================================
+    # SAVE TRAINING METRICS
+    # ========================================================
 
     output = {
-        "project": "NextCandle AI",
-        "version": "training-v3",
-        "symbol": SYMBOL,
-        "display_symbol": DISPLAY_SYMBOL,
-        "prediction": "next_15m_candle",
-        "evidence": [
-            "1m",
-            "5m",
+
+        "project":
+            "NextCandle AI",
+
+        "version":
+            "training-v3.1",
+
+        "symbol":
+            SYMBOL,
+
+        "display_symbol":
+            DISPLAY_SYMBOL,
+
+        "prediction":
+            "next_15m_candle",
+
+        "primary_timeframe":
             "15m",
+
+        "higher_timeframe":
             "4h",
-        ],
-        "history_15m": HISTORY_15M,
-        "neutral_threshold": NEUTRAL_THRESHOLD,
-        "train_ratio": TRAIN_RATIO,
-        "training_samples": len(X_train),
-        "validation_samples": len(X_test),
-        "feature_count": X.shape[1],
-        "target_distribution": distribution,
-        "structure_target_distribution": structure_distribution,
-        "metrics": metrics,
+
+        "lower_timeframes":
+            [
+                "1m",
+                "5m",
+            ],
+
+        "evidence":
+            [
+                "1m",
+                "5m",
+                "15m",
+                "4h",
+            ],
+
+        "history_15m":
+            HISTORY_15M,
+
+        "neutral_threshold":
+            NEUTRAL_THRESHOLD,
+
+        "train_ratio":
+            TRAIN_RATIO,
+
+        "training_samples":
+            len(X_train),
+
+        "validation_samples":
+            len(X_test),
+
+        "feature_count":
+            X.shape[1],
+
+        "direction_target_classes":
+            {
+                "0": "BEARISH",
+                "1": "NEUTRAL",
+                "2": "BULLISH",
+            },
+
+        "structure_target_classes":
+            {
+                "0": "OTHER",
+                "1": "HAMMER_LIKE",
+                "2": "SHOOTING_STAR_LIKE",
+                "3": "DOJI_LIKE",
+                "4": "STRONG_BULLISH",
+                "5": "STRONG_BEARISH",
+                "6": "HANGING_MAN_LIKE",
+            },
+
+        "target_distribution":
+            distribution,
+
+        "structure_target_distribution":
+            structure_distribution,
+
+        "metrics":
+            metrics,
     }
 
     with open(
@@ -543,13 +766,43 @@ def main():
         )
 
     log(
-        f"Metrics saved to: "
+        f"Training metrics saved to: "
         f"{METRICS_PATH}"
     )
 
-    log("================================================")
-    log("TRAINING PIPELINE COMPLETED SUCCESSFULLY")
-    log("================================================")
+    # ========================================================
+    # FINAL STATUS
+    # ========================================================
+
+    log(
+        "================================================"
+    )
+
+    log(
+        "NEXTCANDLE AI TRAINING COMPLETED SUCCESSFULLY"
+    )
+
+    log(
+        f"Model: {MODEL_PATH}"
+    )
+
+    log(
+        f"Metrics: {METRICS_PATH}"
+    )
+
+    log(
+        f"Validation accuracy: "
+        f"{accuracy * 100:.2f}%"
+    )
+
+    log(
+        f"Balanced accuracy: "
+        f"{balanced_accuracy * 100:.2f}%"
+    )
+
+    log(
+        "================================================"
+    )
 
 
 # ============================================================
