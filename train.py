@@ -1,4 +1,3 @@
-
 import os
 import json
 import numpy as np
@@ -19,7 +18,7 @@ from model import (
 
 
 # ============================================================
-# NextCandle AI — TRAINING ENGINE V1
+# NextCandle AI — TRAINING ENGINE V2
 # ============================================================
 #
 # Market:
@@ -32,7 +31,16 @@ from model import (
 #     NEXT 15-MINUTE CANDLE
 #
 # Evidence:
-#     15M + 4H
+#     1M + 5M + 15M + 4H
+#
+# Targets:
+#     Direction:
+#         0 = BEARISH
+#         1 = NEUTRAL
+#         2 = BULLISH
+#
+#     Structure:
+#         Next-candle candle-shape classification
 #
 # IMPORTANT:
 #     Training is chronological.
@@ -41,6 +49,8 @@ from model import (
 
 
 SYMBOL = "CYS_USDT"
+
+DISPLAY_SYMBOL = "CYSUSDT.P"
 
 HISTORY_15M = 2500
 
@@ -65,7 +75,7 @@ def log(message):
 # DATA QUALITY
 # ============================================================
 
-def validate_training_dataset(X, y):
+def validate_training_dataset(X, y, structure_y=None):
 
     if X is None or X.empty:
         raise ValueError(
@@ -109,6 +119,20 @@ def validate_training_dataset(X, y):
             "Training data contains fewer "
             "than two target classes."
         )
+
+    if structure_y is not None:
+
+        if len(structure_y) != len(X):
+            raise ValueError(
+                "Feature/structure-target mismatch: "
+                f"{len(X)} != {len(structure_y)}"
+            )
+
+        if structure_y.isna().any():
+            raise ValueError(
+                "Structure target contains "
+                "missing values."
+            )
 
     return True
 
@@ -216,19 +240,89 @@ def class_distribution(y):
 
 
 # ============================================================
+# STRUCTURE CLASS DISTRIBUTION
+# ============================================================
+
+def structure_class_distribution(
+    structure_y,
+):
+
+    counts = (
+        structure_y.astype(int)
+        .value_counts()
+        .sort_index()
+    )
+
+    total = len(structure_y)
+
+    names = {
+        0: "OTHER",
+        1: "HAMMER_LIKE",
+        2: "SHOOTING_STAR_LIKE",
+        3: "DOJI_LIKE",
+        4: "STRONG_BULLISH",
+        5: "STRONG_BEARISH",
+        6: "HANGING_MAN_LIKE",
+    }
+
+    result = {}
+
+    for class_id, name in names.items():
+
+        count = int(
+            counts.get(
+                class_id,
+                0,
+            )
+        )
+
+        result[name] = {
+            "count": count,
+            "percentage": (
+                round(
+                    count / total * 100,
+                    2,
+                )
+                if total
+                else 0.0
+            ),
+        }
+
+    return result
+
+
+# ============================================================
 # MAIN TRAINING
 # ============================================================
 
 def main():
 
-    log("Starting training pipeline.")
+    log(
+        "================================================"
+    )
 
     log(
-        f"Market: {SYMBOL}"
+        "Starting NextCandle AI training pipeline."
+    )
+
+    log(
+        "================================================"
+    )
+
+    log(
+        f"Market: {DISPLAY_SYMBOL}"
+    )
+
+    log(
+        f"MEXC symbol: {SYMBOL}"
     )
 
     log(
         "Target: next 15-minute candle"
+    )
+
+    log(
+        "Evidence: 1M + 5M + 15M + 4H"
     )
 
     # --------------------------------------------------------
@@ -245,7 +339,9 @@ def main():
         history_15m=HISTORY_15M,
     )
 
-    log("Historical data downloaded.")
+    log(
+        "Historical data downloaded."
+    )
 
     # --------------------------------------------------------
     # VALIDATE RAW DATA
@@ -259,28 +355,31 @@ def main():
 
         log(
             f"{timeframe}: "
-            f"{len(frame)} candles"
+            f"{len(frame)} completed candles"
         )
 
     # --------------------------------------------------------
-    # CURRENT FEATURE ENGINE
-    #
-    # features.py currently builds:
-    #
-    # 15M features
-    # 4H context
-    #
-    # The 1M/5M microstructure layer will be added
-    # to features.py before the final production model.
+    # BUILD MULTI-TIMEFRAME FEATURES
     # --------------------------------------------------------
 
     log(
-        "Building training features..."
+        "Building multi-timeframe features..."
     )
 
-    X, y = prepare_training_data(
+    (
+        X,
+        y,
+        structure_y,
+    ) = prepare_training_data(
+
         df_15m=market_data["15m"],
+
         df_4h=market_data["4h"],
+
+        df_1m=market_data["1m"],
+
+        df_5m=market_data["5m"],
+
         neutral_threshold=NEUTRAL_THRESHOLD,
     )
 
@@ -297,6 +396,7 @@ def main():
     validate_training_dataset(
         X,
         y,
+        structure_y,
     )
 
     log(
@@ -312,8 +412,19 @@ def main():
     )
 
     log(
-        f"Target distribution: "
+        f"Direction target distribution: "
         f"{distribution}"
+    )
+
+    structure_distribution = (
+        structure_class_distribution(
+            structure_y
+        )
+    )
+
+    log(
+        f"Structure target distribution: "
+        f"{structure_distribution}"
     )
 
     # --------------------------------------------------------
@@ -346,7 +457,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # MAKE SURE TRAINING SET HAS ALL IMPORTANT CLASSES
+    # MAKE SURE TRAINING SET HAS IMPORTANT CLASSES
     # --------------------------------------------------------
 
     train_classes = sorted(
@@ -359,11 +470,11 @@ def main():
 
         raise ValueError(
             "Training period contains "
-            "fewer than two classes."
+            "fewer than two direction classes."
         )
 
     log(
-        f"Training classes: "
+        f"Training direction classes: "
         f"{train_classes}"
     )
 
@@ -371,7 +482,9 @@ def main():
     # CREATE MODEL
     # --------------------------------------------------------
 
-    model = NextCandleModel()
+    model = NextCandleModel(
+        model_path=MODEL_PATH
+    )
 
     log(
         "Training gradient boosting model..."
@@ -472,16 +585,24 @@ def main():
             "NextCandle AI",
 
         "version":
-            "training-v1",
+            "training-v2",
 
         "symbol":
             SYMBOL,
 
         "display_symbol":
-            "CYSUSDT.P",
+            DISPLAY_SYMBOL,
 
         "prediction":
             "next_15m_candle",
+
+        "evidence":
+            [
+                "1m",
+                "5m",
+                "15m",
+                "4h",
+            ],
 
         "history_15m":
             HISTORY_15M,
@@ -503,6 +624,9 @@ def main():
 
         "target_distribution":
             distribution,
+
+        "structure_target_distribution":
+            structure_distribution,
 
         "metrics":
             metrics,
