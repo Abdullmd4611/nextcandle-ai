@@ -3,15 +3,27 @@ import pandas as pd
 import numpy as np
 
 from data import fetch_klines, get_latest_price
-from features import prepare_training_data
+from features import build_features, prepare_training_data
 from model import NextCandleModel
 
 
 # ============================================================
 # NEXTCANDLE AI V2
-# Bybit CYSUSDT Perpetual
-# Primary prediction: next 15-minute candle
-# Higher timeframe: completed 4-hour context
+# ============================================================
+# Market:
+#     Bybit USDT Perpetual
+#
+# Primary:
+#     CYSUSDT
+#
+# Prediction:
+#     NEXT 15-MINUTE CANDLE
+#
+# Higher timeframe:
+#     COMPLETED 4-HOUR CONTEXT
+#
+# IMPORTANT:
+#     Training data and live prediction data are kept separate.
 # ============================================================
 
 
@@ -21,10 +33,6 @@ st.set_page_config(
     layout="wide",
 )
 
-
-# ============================================================
-# CONSTANTS
-# ============================================================
 
 DEFAULT_SYMBOL = "CYSUSDT"
 
@@ -47,8 +55,8 @@ if "analysis_result" not in st.session_state:
 st.title("📈 NextCandle AI V2")
 
 st.caption(
-    "Bybit CYSUSDT perpetual • "
-    "Next 15-minute candle analysis"
+    "Bybit CYSUSDT Perpetual • "
+    "Next 15-minute candle prediction"
 )
 
 
@@ -58,6 +66,7 @@ st.caption(
 
 st.sidebar.header("⚙️ MARKET SETTINGS")
 
+
 symbol = st.sidebar.text_input(
     "Bybit Perpetual Symbol",
     value=DEFAULT_SYMBOL,
@@ -65,7 +74,7 @@ symbol = st.sidebar.text_input(
 
 
 history = st.sidebar.slider(
-    "15M Historical Candles",
+    "Historical 15M Candles",
     min_value=1000,
     max_value=5000,
     value=2500,
@@ -108,7 +117,7 @@ run_analysis = st.sidebar.button(
 
 
 # ============================================================
-# INTRO
+# START SCREEN
 # ============================================================
 
 if (
@@ -117,54 +126,50 @@ if (
 ):
 
     st.info(
-        "Select the market settings and press "
+        "Select your settings and press "
         "**🚀 RUN ANALYSIS**."
     )
 
-    st.subheader("🧠 What this system does")
+    st.subheader("🎯 System")
 
     st.write(
-        "• Uses Bybit perpetual-market data."
+        "The AI learns from historical completed "
+        "15-minute candles."
     )
 
     st.write(
-        "• Uses completed 15-minute candles."
-    )
-
-    st.write(
-        "• Uses completed 4-hour candles as "
+        "It uses completed 4-hour candles for "
         "higher-timeframe context."
     )
 
     st.write(
-        "• Learns three outcomes: "
-        "BEARISH, NEUTRAL and BULLISH."
+        "It predicts the direction of the "
+        "NEXT 15-minute candle."
     )
 
     st.write(
-        "• Refuses weak predictions instead of "
-        "forcing a BUY/SELL direction."
+        "Weak predictions can produce WAIT instead "
+        "of forcing a trade direction."
     )
 
     st.warning(
-        "This is a statistical prediction system. "
-        "No model can guarantee the next candle."
+        "No AI model can guarantee the next candle."
     )
 
     st.stop()
 
 
 # ============================================================
-# ANALYSIS
+# RUN ANALYSIS
 # ============================================================
 
 if run_analysis:
 
     try:
 
-        # ----------------------------------------------------
-        # VALIDATE SYMBOL
-        # ----------------------------------------------------
+        # ====================================================
+        # VALIDATION
+        # ====================================================
 
         if not symbol:
 
@@ -173,9 +178,9 @@ if run_analysis:
             )
 
 
-        # ----------------------------------------------------
-        # DOWNLOAD 15M DATA
-        # ----------------------------------------------------
+        # ====================================================
+        # DOWNLOAD COMPLETED 15M DATA
+        # ====================================================
 
         with st.spinner(
             "📥 Downloading completed Bybit 15M candles..."
@@ -198,9 +203,9 @@ if run_analysis:
             )
 
 
-        # ----------------------------------------------------
-        # DOWNLOAD 4H DATA
-        # ----------------------------------------------------
+        # ====================================================
+        # DOWNLOAD COMPLETED 4H DATA
+        # ====================================================
 
         with st.spinner(
             "📥 Downloading completed Bybit 4H candles..."
@@ -223,12 +228,12 @@ if run_analysis:
             )
 
 
-        # ----------------------------------------------------
-        # PREPARE FEATURES + TARGET
-        # ----------------------------------------------------
+        # ====================================================
+        # BUILD TRAINING DATA
+        # ====================================================
 
         with st.spinner(
-            "🧮 Building market features..."
+            "🧮 Building historical training data..."
         ):
 
             X, y = prepare_training_data(
@@ -243,14 +248,13 @@ if run_analysis:
         if len(X) < 500:
 
             raise ValueError(
-                "Not enough usable training samples "
-                "after feature engineering."
+                "Not enough usable training samples."
             )
 
 
-        # ----------------------------------------------------
-        # CHECK CLASS BALANCE
-        # ----------------------------------------------------
+        # ====================================================
+        # CLASS CHECK
+        # ====================================================
 
         class_counts = (
             y.value_counts()
@@ -264,15 +268,15 @@ if run_analysis:
         if (class_counts == 0).any():
 
             raise ValueError(
-                "Training data does not contain all "
-                "three classes. Increase history or "
-                "adjust the neutral threshold."
+                "One or more target classes are missing. "
+                "Increase history or adjust the neutral "
+                "threshold."
             )
 
 
-        # ----------------------------------------------------
-        # TIME-ORDERED TRAIN / VALIDATION SPLIT
-        # ----------------------------------------------------
+        # ====================================================
+        # TIME-ORDERED TRAIN / HOLDOUT SPLIT
+        # ====================================================
 
         split_index = int(
             len(X) * 0.80
@@ -303,12 +307,12 @@ if run_analysis:
             )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # TRAIN MODEL
-        # ----------------------------------------------------
+        # ====================================================
 
         with st.spinner(
-            "🤖 Training NextCandle AI V2..."
+            "🤖 Training NextCandle AI..."
         ):
 
             model = NextCandleModel()
@@ -319,12 +323,12 @@ if run_analysis:
             )
 
 
-        # ----------------------------------------------------
-        # HOLDOUT EVALUATION
-        # ----------------------------------------------------
+        # ====================================================
+        # UNSEEN DATA EVALUATION
+        # ====================================================
 
         with st.spinner(
-            "🧪 Testing model on unseen candles..."
+            "🧪 Testing on unseen historical candles..."
         ):
 
             metrics = model.evaluate(
@@ -333,36 +337,87 @@ if run_analysis:
             )
 
 
+        # ====================================================
+        # LIVE FEATURE CALCULATION
+        # ====================================================
+        #
+        # IMPORTANT:
+        #
+        # X is the training dataset.
+        #
+        # We DO NOT use X.iloc[-1] for the live prediction.
+        #
+        # Instead we calculate features from the complete
+        # raw 15M dataset and take the latest completed candle.
+        #
+        # This candle does not have a target yet because the
+        # NEXT candle has not happened.
+        #
+        # That is exactly what we want to predict.
+        # ====================================================
+
+        with st.spinner(
+            "🔎 Preparing the latest completed candle..."
+        ):
+
+            live_features = build_features(
+                df_15m=raw_15m,
+                df_4h=raw_4h,
+            )
+
+
+        if live_features.empty:
+
+            raise ValueError(
+                "Unable to calculate live features."
+            )
+
+
         # ----------------------------------------------------
-        # LATEST FEATURES
+        # Remove rows with unusable features.
+        #
+        # We only need the latest valid completed candle.
         # ----------------------------------------------------
 
-        latest_features = X.iloc[
-            [-1]
-        ]
-
-
-        # ----------------------------------------------------
-        # PREDICTION
-        # ----------------------------------------------------
-
-        result_list = model.signal(
-            latest_features,
-            minimum_confidence=(
-                confidence_threshold / 100
-            ),
-            minimum_edge=(
-                edge_threshold / 100
-            ),
+        valid_live = live_features.dropna(
+            how="all"
         )
 
 
-        result = result_list[0]
+        if valid_live.empty:
+
+            raise ValueError(
+                "No valid live feature row available."
+            )
 
 
-        # ----------------------------------------------------
-        # CURRENT PRICE
-        # ----------------------------------------------------
+        latest_live_features = (
+            valid_live.iloc[[-1]]
+        )
+
+
+        # ====================================================
+        # LIVE PREDICTION
+        # ====================================================
+
+        with st.spinner(
+            "🎯 Predicting the NEXT 15M candle..."
+        ):
+
+            result = model.signal(
+                latest_live_features,
+                minimum_confidence=(
+                    confidence_threshold / 100
+                ),
+                minimum_edge=(
+                    edge_threshold / 100
+                ),
+            )[0]
+
+
+        # ====================================================
+        # LATEST BYBIT PRICE
+        # ====================================================
 
         with st.spinner(
             "💰 Getting latest Bybit price..."
@@ -373,9 +428,9 @@ if run_analysis:
             )
 
 
-        # ----------------------------------------------------
-        # STORE RESULT
-        # ----------------------------------------------------
+        # ====================================================
+        # STORE
+        # ====================================================
 
         st.session_state.analysis_result = {
 
@@ -399,6 +454,9 @@ if run_analysis:
 
             "current_price": current_price,
 
+            "latest_prediction_candle":
+                raw_15m.iloc[-1]["timestamp"],
+
         }
 
 
@@ -419,6 +477,7 @@ if run_analysis:
 
 saved = st.session_state.analysis_result
 
+
 if saved is None:
     st.stop()
 
@@ -433,8 +492,6 @@ X = saved["X"]
 
 y = saved["y"]
 
-model = saved["model"]
-
 result = saved["result"]
 
 metrics = saved["metrics"]
@@ -442,6 +499,10 @@ metrics = saved["metrics"]
 class_counts = saved["class_counts"]
 
 current_price = saved["current_price"]
+
+prediction_candle = (
+    saved["latest_prediction_candle"]
+)
 
 
 # ============================================================
@@ -468,8 +529,10 @@ if signal == "BULLISH":
 
     st.success(
         f"🟢 BULLISH\n\n"
-        f"Confidence: {confidence * 100:.2f}%\n\n"
-        f"Probability edge: {edge * 100:.2f}%"
+        f"Confidence: "
+        f"{confidence * 100:.2f}%\n\n"
+        f"Probability edge: "
+        f"{edge * 100:.2f}%"
     )
 
 
@@ -477,18 +540,23 @@ elif signal == "BEARISH":
 
     st.error(
         f"🔴 BEARISH\n\n"
-        f"Confidence: {confidence * 100:.2f}%\n\n"
-        f"Probability edge: {edge * 100:.2f}%"
+        f"Confidence: "
+        f"{confidence * 100:.2f}%\n\n"
+        f"Probability edge: "
+        f"{edge * 100:.2f}%"
     )
 
 
 else:
 
     st.warning(
-        f"⚪ WAIT / NO STRONG EDGE\n\n"
-        f"Model's strongest class: {prediction}\n\n"
-        f"Confidence: {confidence * 100:.2f}%\n\n"
-        f"Probability edge: {edge * 100:.2f}%"
+        f"⚪ WAIT\n\n"
+        f"Strongest model class: "
+        f"{prediction}\n\n"
+        f"Confidence: "
+        f"{confidence * 100:.2f}%\n\n"
+        f"Probability edge: "
+        f"{edge * 100:.2f}%"
     )
 
 
@@ -497,7 +565,7 @@ else:
 # ============================================================
 
 st.subheader(
-    "🤖 Model Probability"
+    "🤖 NEXT-CANDLE PROBABILITY"
 )
 
 
@@ -526,6 +594,24 @@ with p3:
         "🟢 BULLISH",
         f"{result['bullish_probability'] * 100:.2f}%",
     )
+
+
+# ============================================================
+# PREDICTION CANDLE
+# ============================================================
+
+st.subheader(
+    "🕯️ PREDICTION BASIS"
+)
+
+st.write(
+    "The prediction is based on the latest "
+    "completed 15-minute candle:"
+)
+
+st.info(
+    str(prediction_candle)
+)
 
 
 # ============================================================
@@ -560,11 +646,11 @@ with m2:
 
 with m3:
 
-    last_candle = raw_15m.iloc[-1]
+    latest_candle = raw_15m.iloc[-1]
 
     candle_change = (
-        float(last_candle["close"])
-        / float(last_candle["open"])
+        float(latest_candle["close"])
+        / float(latest_candle["open"])
         - 1
     )
 
@@ -637,7 +723,7 @@ elif (
 
 else:
 
-    htf_bias = "⚪ MIXED / NEUTRAL"
+    htf_bias = "⚪ MIXED"
 
 
 h1, h2, h3 = st.columns(3)
@@ -705,19 +791,12 @@ with q3:
     )
 
 
-st.caption(
-    "The holdout set is the latest 20% of the "
-    "historical samples and is not used to train "
-    "the model."
-)
-
-
 # ============================================================
-# TRAINING CLASS DISTRIBUTION
+# TARGET DISTRIBUTION
 # ============================================================
 
 st.subheader(
-    "📊 Training Target Distribution"
+    "📊 Historical Target Distribution"
 )
 
 
@@ -727,7 +806,7 @@ d1, d2, d3 = st.columns(3)
 with d1:
 
     st.metric(
-        "BEARISH Samples",
+        "🔴 BEARISH",
         f"{int(class_counts[0]):,}",
     )
 
@@ -735,7 +814,7 @@ with d1:
 with d2:
 
     st.metric(
-        "NEUTRAL Samples",
+        "⚪ NEUTRAL",
         f"{int(class_counts[1]):,}",
     )
 
@@ -743,17 +822,17 @@ with d2:
 with d3:
 
     st.metric(
-        "BULLISH Samples",
+        "🟢 BULLISH",
         f"{int(class_counts[2]):,}",
     )
 
 
 # ============================================================
-# CLASSIFICATION REPORT
+# DETAILED REPORT
 # ============================================================
 
 with st.expander(
-    "📋 Detailed classification report"
+    "📋 Classification report"
 ):
 
     st.text(
@@ -794,7 +873,7 @@ with st.expander(
 
 
 # ============================================================
-# RECENT 15M CANDLES
+# RECENT 15M
 # ============================================================
 
 st.divider()
@@ -804,7 +883,7 @@ st.subheader(
 )
 
 
-display_columns = [
+columns_15m = [
     "timestamp",
     "open",
     "high",
@@ -814,23 +893,23 @@ display_columns = [
 ]
 
 
-available_columns = [
+available_15m = [
     column
-    for column in display_columns
+    for column in columns_15m
     if column in raw_15m.columns
 ]
 
 
 st.dataframe(
     raw_15m[
-        available_columns
+        available_15m
     ].tail(20),
     use_container_width=True,
 )
 
 
 # ============================================================
-# RECENT 4H CANDLES
+# RECENT 4H
 # ============================================================
 
 st.subheader(
@@ -838,9 +917,16 @@ st.subheader(
 )
 
 
+available_4h = [
+    column
+    for column in columns_15m
+    if column in raw_4h.columns
+]
+
+
 st.dataframe(
     raw_4h[
-        available_columns
+        available_4h
     ].tail(10),
     use_container_width=True,
 )
@@ -853,13 +939,12 @@ st.dataframe(
 st.divider()
 
 st.warning(
-    "⚠️ IMPORTANT: This system produces statistical "
-    "probabilities, not guaranteed predictions. "
-    "Crypto perpetual markets can move rapidly, "
-    "and leverage can amplify losses."
+    "⚠️ This system provides statistical probabilities, "
+    "not guaranteed future outcomes. Perpetual futures "
+    "and leverage involve substantial risk."
 )
 
 st.caption(
-    "NextCandle AI V2 • Bybit data • "
+    "NextCandle AI V2 • Bybit • CYSUSDT • "
     "15M prediction • 4H context"
 )
