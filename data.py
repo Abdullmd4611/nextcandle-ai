@@ -3,44 +3,15 @@ import requests
 import pandas as pd
 
 
-# =========================================================
-# NextCandle AI - BYBIT FUTURES DATA ENGINE V4.2
-#
-# Market:
-#     Bybit USDT Perpetual
-#
-# Primary:
-#     CYSUSDT
-#
-# Prediction:
-#     NEXT 15-MINUTE CANDLE
-#
-# Evidence:
-#     1M + 5M + 15M + 4H
-#
-# API:
-#     Bybit V5 Public Market API
-#     category = linear
-#
-# IMPORTANT:
-#     Only COMPLETED candles are returned.
-# =========================================================
-
-
-BASE_URL = "https://api.bybit.com"
-
+BASE_URL = "https://api.bytick.com"
 CATEGORY = "linear"
 
 
-# =========================================================
-# INTERVALS
-# =========================================================
-
 INTERVAL_SECONDS = {
     "Min1": 60,
-    "Min5": 5 * 60,
-    "Min15": 15 * 60,
-    "Hour4": 4 * 60 * 60,
+    "Min5": 300,
+    "Min15": 900,
+    "Hour4": 14400,
 }
 
 
@@ -52,68 +23,37 @@ BYBIT_INTERVALS = {
 }
 
 
-# =========================================================
-# SESSION
-# =========================================================
-
 SESSION = requests.Session()
 
 SESSION.headers.update({
-    "User-Agent": "NextCandleAI/4.2",
+    "User-Agent": "NextCandleAI/5.0",
     "Accept": "application/json",
 })
 
 
-# =========================================================
-# VALIDATE INTERVAL
-# =========================================================
-
 def _validate_interval(interval):
 
     if interval not in INTERVAL_SECONDS:
-
         raise ValueError(
-            f"Unsupported interval: {interval}. "
-            f"Supported intervals: "
-            f"{', '.join(INTERVAL_SECONDS.keys())}"
+            f"Unsupported interval: {interval}"
         )
 
-
-# =========================================================
-# NORMALIZE SYMBOL
-# =========================================================
 
 def _normalize_symbol(symbol):
 
     if symbol is None:
-
-        raise ValueError(
-            "Symbol cannot be None."
-        )
+        raise ValueError("Symbol cannot be None.")
 
     symbol = str(symbol).upper().strip()
-
-    # Accept:
-    # CYSUSDT
-    # CYS_USDT
-    # CYSUSDT.P
-    # CYS_USDT.P
 
     symbol = symbol.replace("_", "")
     symbol = symbol.replace(".P", "")
 
     if not symbol:
-
-        raise ValueError(
-            "Symbol cannot be empty."
-        )
+        raise ValueError("Symbol cannot be empty.")
 
     return symbol
 
-
-# =========================================================
-# REQUEST BYBIT V5 KLINES
-# =========================================================
 
 def _request(
     symbol,
@@ -121,7 +61,7 @@ def _request(
     start,
     end,
     limit=1000,
-    retries=4,
+    retries=5,
 ):
 
     url = f"{BASE_URL}/v5/market/kline"
@@ -147,32 +87,32 @@ def _request(
                 timeout=30,
             )
 
+            if response.status_code == 403:
+
+                raise RuntimeError(
+                    "Bybit returned HTTP 403 Forbidden. "
+                    "The API endpoint or runner IP may be blocked."
+                )
+
             response.raise_for_status()
 
             payload = response.json()
 
-            ret_code = payload.get("retCode")
-
-            if ret_code != 0:
+            if payload.get("retCode") != 0:
 
                 raise RuntimeError(
                     "Bybit returned error "
-                    f"{ret_code}: "
+                    f"{payload.get('retCode')}: "
                     f"{payload.get('retMsg', 'Unknown error')}"
                 )
 
-            result = payload.get(
-                "result",
-                {}
-            )
-
-            rows = result.get(
-                "list",
-                []
+            rows = (
+                payload
+                .get("result", {})
+                .get("list", [])
             )
 
             if not rows:
-
                 return pd.DataFrame()
 
             records = []
@@ -180,35 +120,19 @@ def _request(
             for row in rows:
 
                 if len(row) < 7:
-
                     continue
 
                 records.append({
-
-                    "timestamp":
-                        int(row[0]),
-
-                    "open":
-                        float(row[1]),
-
-                    "high":
-                        float(row[2]),
-
-                    "low":
-                        float(row[3]),
-
-                    "close":
-                        float(row[4]),
-
-                    "volume":
-                        float(row[5]),
-
-                    "turnover":
-                        float(row[6]),
+                    "timestamp": int(row[0]),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[5]),
+                    "turnover": float(row[6]),
                 })
 
             if not records:
-
                 return pd.DataFrame()
 
             return pd.DataFrame(records)
@@ -218,10 +142,7 @@ def _request(
             last_error = exc
 
             if attempt < retries - 1:
-
-                time.sleep(
-                    2.0 * (attempt + 1)
-                )
+                time.sleep(2 + attempt * 2)
 
     raise RuntimeError(
         f"Unable to download "
@@ -229,10 +150,6 @@ def _request(
         f"{last_error}"
     )
 
-
-# =========================================================
-# NORMALIZE DATA
-# =========================================================
 
 def _normalize(frame):
 
@@ -251,8 +168,6 @@ def _normalize(frame):
         )
 
     x = frame.copy()
-
-    # Bybit timestamps are milliseconds.
 
     x["timestamp"] = pd.to_datetime(
         x["timestamp"],
@@ -308,17 +223,12 @@ def _normalize(frame):
     return x
 
 
-# =========================================================
-# REMOVE FORMING CANDLE
-# =========================================================
-
 def _remove_forming_candle(
     frame,
     interval,
 ):
 
     if frame is None or frame.empty:
-
         return frame
 
     seconds = INTERVAL_SECONDS[interval]
@@ -346,10 +256,6 @@ def _remove_forming_candle(
     )
 
 
-# =========================================================
-# FETCH HISTORICAL CANDLES
-# =========================================================
-
 def fetch_klines(
     symbol="CYSUSDT",
     interval="Min15",
@@ -363,7 +269,6 @@ def fetch_klines(
     total = int(total)
 
     if total < 100:
-
         raise ValueError(
             "total must be at least 100 candles."
         )
@@ -374,7 +279,7 @@ def fetch_klines(
 
     max_per_request = 1000
 
-    # Bybit requires milliseconds.
+    interval_ms = seconds * 1000
 
     target_end = now * 1000
 
@@ -389,8 +294,6 @@ def fetch_klines(
     cursor_end = target_end
 
     request_count = 0
-
-    interval_ms = seconds * 1000
 
     while cursor_end > target_start:
 
@@ -414,23 +317,17 @@ def fetch_klines(
         request_count += 1
 
         if not chunk.empty:
-
             chunks.append(chunk)
 
-        cursor_end = (
-            cursor_start
-            - interval_ms
-        )
+        cursor_end = cursor_start - 1
 
         if request_count > 100:
-
             raise RuntimeError(
                 "Historical download required "
-                "an unexpectedly large number "
-                "of requests."
+                "too many requests."
             )
 
-        time.sleep(0.10)
+        time.sleep(0.15)
 
     if not chunks:
 
@@ -470,10 +367,6 @@ def fetch_klines(
     return frame
 
 
-# =========================================================
-# MULTI-TIMEFRAME DOWNLOAD
-# =========================================================
-
 def fetch_multi_timeframe(
     symbol="CYSUSDT",
     history_15m=2500,
@@ -483,19 +376,15 @@ def fetch_multi_timeframe(
 
     candles_15m = int(history_15m)
 
-    # 5M candles.
-
-    candles_5m = int(
-        candles_15m * 3 + 300
+    candles_5m = (
+        candles_15m * 3
+        + 300
     )
 
-    # 1M candles.
-
-    candles_1m = int(
-        candles_15m * 15 + 1500
+    candles_1m = (
+        candles_15m * 15
+        + 1500
     )
-
-    # 4H candles.
 
     candles_4h = max(
         300,
@@ -549,17 +438,10 @@ def fetch_multi_timeframe(
     return data
 
 
-# =========================================================
-# DATA QUALITY CHECK
-# =========================================================
-
 def validate_timeframe_data(data):
 
     if data is None:
-
-        raise ValueError(
-            "Market data is None."
-        )
+        raise ValueError("Market data is None.")
 
     required = {
         "1m",
@@ -568,15 +450,11 @@ def validate_timeframe_data(data):
         "4h",
     }
 
-    missing = (
-        required - set(data.keys())
-    )
+    missing = required - set(data.keys())
 
     if missing:
-
         raise ValueError(
-            "Missing timeframes: "
-            f"{sorted(missing)}"
+            f"Missing timeframes: {sorted(missing)}"
         )
 
     required_columns = [
@@ -588,19 +466,11 @@ def validate_timeframe_data(data):
         "volume",
     ]
 
-    timeframe_intervals = {
-        "1m": "Min1",
-        "5m": "Min5",
-        "15m": "Min15",
-        "4h": "Hour4",
-    }
-
     for timeframe in required:
 
         frame = data[timeframe]
 
         if frame is None or frame.empty:
-
             raise ValueError(
                 f"{timeframe} data is empty."
             )
@@ -612,7 +482,6 @@ def validate_timeframe_data(data):
         ]
 
         if missing_columns:
-
             raise ValueError(
                 f"{timeframe} is missing "
                 f"columns: {missing_columns}"
@@ -621,7 +490,6 @@ def validate_timeframe_data(data):
         if not pd.api.types.is_datetime64_any_dtype(
             frame["timestamp"]
         ):
-
             raise ValueError(
                 f"{timeframe} timestamp column "
                 f"is not datetime."
@@ -630,7 +498,6 @@ def validate_timeframe_data(data):
         if not frame[
             "timestamp"
         ].is_monotonic_increasing:
-
             raise ValueError(
                 f"{timeframe} timestamps "
                 f"are not sorted."
@@ -639,7 +506,6 @@ def validate_timeframe_data(data):
         if frame[
             "timestamp"
         ].duplicated().any():
-
             raise ValueError(
                 f"{timeframe} contains "
                 f"duplicate timestamps."
@@ -663,14 +529,10 @@ def validate_timeframe_data(data):
 
         invalid_ohlc = (
             (frame["high"] < frame["low"])
-            |
-            (frame["high"] < frame["open"])
-            |
-            (frame["high"] < frame["close"])
-            |
-            (frame["low"] > frame["open"])
-            |
-            (frame["low"] > frame["close"])
+            | (frame["high"] < frame["open"])
+            | (frame["high"] < frame["close"])
+            | (frame["low"] > frame["open"])
+            | (frame["low"] > frame["close"])
         )
 
         if invalid_ohlc.any():
@@ -689,18 +551,19 @@ def validate_timeframe_data(data):
                 f"negative volume."
             )
 
-    # Verify latest candle is completed.
-
     now = int(time.time())
+
+    timeframe_intervals = {
+        "1m": "Min1",
+        "5m": "Min5",
+        "15m": "Min15",
+        "4h": "Hour4",
+    }
 
     for timeframe, frame in data.items():
 
-        interval_name = (
-            timeframe_intervals[timeframe]
-        )
-
         seconds = INTERVAL_SECONDS[
-            interval_name
+            timeframe_intervals[timeframe]
         ]
 
         current_period_start = (
@@ -727,10 +590,6 @@ def validate_timeframe_data(data):
     return True
 
 
-# =========================================================
-# LATEST COMPLETED CANDLE
-# =========================================================
-
 def get_latest_completed_candle(
     symbol="CYSUSDT",
     interval="Min15",
@@ -751,10 +610,6 @@ def get_latest_completed_candle(
     return frame.iloc[-1].copy()
 
 
-# =========================================================
-# LATEST PRICE
-# =========================================================
-
 def get_latest_price(
     symbol="CYSUSDT",
 ):
@@ -772,7 +627,7 @@ def get_latest_price(
 
     last_error = None
 
-    for attempt in range(4):
+    for attempt in range(5):
 
         try:
 
@@ -781,6 +636,12 @@ def get_latest_price(
                 params=params,
                 timeout=20,
             )
+
+            if response.status_code == 403:
+
+                raise RuntimeError(
+                    "Bybit returned HTTP 403 Forbidden."
+                )
 
             response.raise_for_status()
 
@@ -793,14 +654,10 @@ def get_latest_price(
                     f"{payload.get('retMsg', 'Unknown error')}"
                 )
 
-            result = payload.get(
-                "result",
-                {}
-            )
-
-            ticker_list = result.get(
-                "list",
-                []
+            ticker_list = (
+                payload
+                .get("result", {})
+                .get("list", [])
             )
 
             if not ticker_list:
@@ -827,10 +684,9 @@ def get_latest_price(
 
             last_error = exc
 
-            if attempt < 3:
-
+            if attempt < 4:
                 time.sleep(
-                    1.5 * (attempt + 1)
+                    2 + attempt
                 )
 
     raise RuntimeError(
