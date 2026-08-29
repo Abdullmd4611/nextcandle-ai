@@ -14,8 +14,7 @@ from sklearn.metrics import (
 
 
 # ============================================================
-# NextCandle AI — MODEL ENGINE V2
-# ============================================================
+# NextCandle AI - MODEL ENGINE V3
 #
 # Classes:
 #     0 = BEARISH
@@ -25,8 +24,7 @@ from sklearn.metrics import (
 # Primary prediction:
 #     NEXT 15-MINUTE CANDLE
 #
-# Important:
-#     Training and evaluation must remain time ordered.
+# Training and evaluation remain time ordered.
 # ============================================================
 
 
@@ -41,7 +39,7 @@ class NextCandleModel:
         2: "BULLISH",
     }
 
-    VERSION = "2.1"
+    VERSION = "3.0"
 
     def __init__(
         self,
@@ -55,44 +53,30 @@ class NextCandleModel:
         # ----------------------------------------------------
         # Gradient boosting model
         #
+        # Early stopping is disabled because the application
+        # performs its own chronological validation split.
+        #
         # IMPORTANT:
-        #
-        # Internal sklearn early stopping is disabled.
-        #
-        # Market data is time-series data. We don't want the
-        # estimator creating its own validation split.
-        #
-        # The application performs the chronological holdout
-        # separately.
+        # n_iter_no_change must be an integer in current
+        # versions of scikit-learn, even when early stopping
+        # is disabled.
         # ----------------------------------------------------
 
         self.model = HistGradientBoostingClassifier(
-
             learning_rate=0.035,
-
             max_iter=500,
-
             max_leaf_nodes=31,
-
             max_depth=None,
-
             min_samples_leaf=30,
-
             l2_regularization=1.0,
-
             early_stopping=False,
-
             validation_fraction=None,
-
-            n_iter_no_change=None,
-
+            n_iter_no_change=20,
             random_state=random_state,
         )
 
         self.feature_columns = None
-
         self.is_fitted = False
-
 
     # ========================================================
     # VALIDATE INPUT
@@ -191,7 +175,6 @@ class NextCandleModel:
 
         return X, y
 
-
     # ========================================================
     # TRAIN
     # ========================================================
@@ -213,7 +196,6 @@ class NextCandleModel:
 
         # ----------------------------------------------------
         # Clean numerical features.
-        #
         # HistGradientBoosting supports NaN values.
         # ----------------------------------------------------
 
@@ -228,7 +210,7 @@ class NextCandleModel:
         # Train.
         #
         # No random train/test split occurs here.
-        # The caller controls the chronological split.
+        # The caller controls chronological validation.
         # ----------------------------------------------------
 
         self.model.fit(
@@ -239,7 +221,6 @@ class NextCandleModel:
         self.is_fitted = True
 
         return self
-
 
     # ========================================================
     # PREPARE FEATURES
@@ -281,8 +262,7 @@ class NextCandleModel:
             )
 
         # ----------------------------------------------------
-        # Extra columns are harmless.
-        # Only the exact training schema is used.
+        # Extra columns are ignored.
         # ----------------------------------------------------
 
         X = X[
@@ -297,7 +277,6 @@ class NextCandleModel:
         X = X.astype(float)
 
         return X
-
 
     # ========================================================
     # PROBABILITY
@@ -317,8 +296,6 @@ class NextCandleModel:
         # Always return:
         #
         # [BEARISH, NEUTRAL, BULLISH]
-        #
-        # regardless of sklearn's internal class ordering.
         # ----------------------------------------------------
 
         output = np.zeros(
@@ -381,7 +358,6 @@ class NextCandleModel:
 
         return output
 
-
     # ========================================================
     # CLASS PREDICTION
     # ========================================================
@@ -396,7 +372,6 @@ class NextCandleModel:
             probabilities,
             axis=1,
         )
-
 
     # ========================================================
     # SIGNAL
@@ -473,31 +448,34 @@ class NextCandleModel:
             )
 
             # ------------------------------------------------
-            # We only issue a directional signal when:
+            # Directional signal rules:
             #
-            # 1. The model's strongest class is bullish/bearish
-            # 2. Confidence is high enough
-            # 3. Probability edge is high enough
+            # BULLISH:
+            #   strongest class is bullish
+            #   confidence >= threshold
+            #   edge >= threshold
             #
-            # Otherwise WAIT.
+            # BEARISH:
+            #   strongest class is bearish
+            #   confidence >= threshold
+            #   edge >= threshold
+            #
+            # Otherwise:
+            #   WAIT
             # ------------------------------------------------
 
             if (
                 best_class == 2
-                and confidence
-                >= minimum_confidence
-                and edge
-                >= minimum_edge
+                and confidence >= minimum_confidence
+                and edge >= minimum_edge
             ):
 
                 signal = "BULLISH"
 
             elif (
                 best_class == 0
-                and confidence
-                >= minimum_confidence
-                and edge
-                >= minimum_edge
+                and confidence >= minimum_confidence
+                and edge >= minimum_edge
             ):
 
                 signal = "BEARISH"
@@ -533,7 +511,6 @@ class NextCandleModel:
             )
 
         return results
-
 
     # ========================================================
     # EVALUATION
@@ -633,7 +610,6 @@ class NextCandleModel:
 
         return metrics
 
-
     # ========================================================
     # SAVE
     # ========================================================
@@ -683,7 +659,6 @@ class NextCandleModel:
         )
 
         return path
-
 
     # ========================================================
     # LOAD
@@ -738,7 +713,6 @@ class NextCandleModel:
         self.is_fitted = True
 
         return self
-
 
     # ========================================================
     # HUMAN-READABLE EXPLANATION
