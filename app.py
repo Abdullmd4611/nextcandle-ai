@@ -236,7 +236,11 @@ if run_analysis:
             "🧮 Building historical training data..."
         ):
 
-            X, y = prepare_training_data(
+            # IMPORTANT:
+            # features.py now returns:
+            # X, y, structure_y
+
+            X, y, structure_y = prepare_training_data(
                 df_15m=raw_15m,
                 df_4h=raw_4h,
                 neutral_threshold=(
@@ -340,21 +344,6 @@ if run_analysis:
         # ====================================================
         # LIVE FEATURE CALCULATION
         # ====================================================
-        #
-        # IMPORTANT:
-        #
-        # X is the training dataset.
-        #
-        # We DO NOT use X.iloc[-1] for the live prediction.
-        #
-        # Instead we calculate features from the complete
-        # raw 15M dataset and take the latest completed candle.
-        #
-        # This candle does not have a target yet because the
-        # NEXT candle has not happened.
-        #
-        # That is exactly what we want to predict.
-        # ====================================================
 
         with st.spinner(
             "🔎 Preparing the latest completed candle..."
@@ -375,8 +364,6 @@ if run_analysis:
 
         # ----------------------------------------------------
         # Remove rows with unusable features.
-        #
-        # We only need the latest valid completed candle.
         # ----------------------------------------------------
 
         valid_live = live_features.dropna(
@@ -444,6 +431,8 @@ if run_analysis:
 
             "y": y,
 
+            "structure_y": structure_y,
+
             "model": model,
 
             "result": result,
@@ -491,6 +480,8 @@ raw_4h = saved["raw_4h"]
 X = saved["X"]
 
 y = saved["y"]
+
+structure_y = saved["structure_y"]
 
 result = saved["result"]
 
