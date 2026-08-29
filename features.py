@@ -3,7 +3,7 @@ import pandas as pd
 
 
 # ============================================================
-# NextCandle AI — Feature Engineering V3
+# NextCandle AI — Feature Engineering V3.1
 #
 # Primary prediction:
 #     NEXT 15-MINUTE CANDLE
@@ -17,6 +17,10 @@ import pandas as pd
 # IMPORTANT:
 # Features at time T may only use information available at T.
 # The NEXT 15-minute candle is the prediction target.
+#
+# V3.1 FIX:
+#     Automatically normalizes candle timestamps into a
+#     pandas DatetimeIndex before feature engineering.
 # ============================================================
 
 
@@ -99,12 +103,144 @@ def _rolling_zscore(series, period):
 
 
 # ============================================================
+# TIMESTAMP NORMALIZATION
+# ============================================================
+
+def _normalize_datetime_index(df, name):
+    """
+    Convert the dataframe index into a clean pandas
+    DatetimeIndex.
+
+    Handles common MEXC timestamp formats including:
+
+        - pandas DatetimeIndex
+        - datetime strings
+        - Unix seconds
+        - Unix milliseconds
+        - Unix microseconds
+        - Unix nanoseconds
+
+    The final index is timezone-naive UTC.
+    """
+
+    df = df.copy()
+
+    index = df.index
+
+    # --------------------------------------------------------
+    # Already a DatetimeIndex
+    # --------------------------------------------------------
+
+    if isinstance(index, pd.DatetimeIndex):
+
+        converted = index
+
+        if converted.tz is not None:
+            converted = converted.tz_convert(
+                "UTC"
+            ).tz_localize(None)
+
+        df.index = converted
+
+        return df
+
+    # --------------------------------------------------------
+    # Numeric timestamps.
+    #
+    # Detect the timestamp unit based on magnitude.
+    # --------------------------------------------------------
+
+    numeric_index = pd.to_numeric(
+        index,
+        errors="coerce",
+    )
+
+    numeric_valid = (
+        pd.notna(numeric_index).all()
+    )
+
+    if numeric_valid:
+
+        values = np.asarray(
+            numeric_index,
+            dtype="int64",
+        )
+
+        if len(values) == 0:
+            raise ValueError(
+                f"{name} contains no timestamps."
+            )
+
+        maximum = np.max(
+            np.abs(values)
+        )
+
+        if maximum >= 10**18:
+
+            unit = "ns"
+
+        elif maximum >= 10**15:
+
+            unit = "us"
+
+        elif maximum >= 10**12:
+
+            unit = "ms"
+
+        else:
+
+            unit = "s"
+
+        converted = pd.to_datetime(
+            values,
+            unit=unit,
+            errors="coerce",
+            utc=True,
+        )
+
+    else:
+
+        # ----------------------------------------------------
+        # String/object timestamps.
+        # ----------------------------------------------------
+
+        converted = pd.to_datetime(
+            index,
+            errors="coerce",
+            utc=True,
+        )
+
+    if converted.isna().any():
+
+        bad_count = int(
+            converted.isna().sum()
+        )
+
+        raise ValueError(
+            f"{name} contains {bad_count} "
+            "invalid timestamp values."
+        )
+
+    converted = converted.tz_convert(
+        "UTC"
+    ).tz_localize(
+        None
+    )
+
+    df.index = converted
+
+    return df
+
+
+# ============================================================
 # DATA VALIDATION
 # ============================================================
 
 def _validate_ohlcv(df, name):
     if df is None or df.empty:
-        raise ValueError(f"{name} data is empty.")
+        raise ValueError(
+            f"{name} data is empty."
+        )
 
     required = [
         "open",
@@ -125,14 +261,27 @@ def _validate_ohlcv(df, name):
             f"{name} data missing columns: {missing}"
         )
 
-    if not isinstance(df.index, pd.DatetimeIndex):
-        raise ValueError(
-            f"{name} index must be a pandas DatetimeIndex."
-        )
 
+# ============================================================
+# CLEAN OHLCV
+# ============================================================
 
 def _clean_ohlcv(df):
     df = df.copy()
+
+    # --------------------------------------------------------
+    # FIX:
+    # Always normalize timestamps BEFORE any feature work.
+    # --------------------------------------------------------
+
+    df = _normalize_datetime_index(
+        df,
+        "OHLCV",
+    )
+
+    # --------------------------------------------------------
+    # Remove invalid / duplicate timestamps.
+    # --------------------------------------------------------
 
     df = df[
         ~df.index.duplicated(
@@ -151,6 +300,7 @@ def _clean_ohlcv(df):
     ]
 
     for column in numeric_columns:
+
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce",
@@ -160,7 +310,10 @@ def _clean_ohlcv(df):
         subset=numeric_columns
     )
 
+    # --------------------------------------------------------
     # Reject impossible OHLC relationships.
+    # --------------------------------------------------------
+
     df = df[
         (df["high"] >= df["low"])
         & (df["high"] >= df["open"])
@@ -177,7 +330,10 @@ def _clean_ohlcv(df):
 # ============================================================
 
 def _candle_features(df, prefix=""):
-    out = pd.DataFrame(index=df.index)
+
+    out = pd.DataFrame(
+        index=df.index
+    )
 
     o = df["open"]
     h = df["high"]
@@ -249,7 +405,6 @@ def _candle_features(df, prefix=""):
         body / candle_range <= 0.10
     ).astype(int)
 
-    # Geometry useful for future candle-shape classification.
     out[f"{prefix}lower_wick_body_ratio"] = (
         lower_wick / (body + EPS)
     )
@@ -262,7 +417,6 @@ def _candle_features(df, prefix=""):
         candle_range / (body + EPS)
     )
 
-    # Soft pattern geometry.
     out[f"{prefix}hammer_geometry"] = (
         (lower_wick >= body * 2.0)
         & (upper_wick <= body)
@@ -291,7 +445,10 @@ def _candle_features(df, prefix=""):
 # ============================================================
 
 def _momentum_features(df, prefix=""):
-    out = pd.DataFrame(index=df.index)
+
+    out = pd.DataFrame(
+        index=df.index
+    )
 
     close = df["close"]
 
@@ -307,7 +464,10 @@ def _momentum_features(df, prefix=""):
         32,
         48,
     ]:
-        out[f"{prefix}return_{period}"] = (
+
+        out[
+            f"{prefix}return_{period}"
+        ] = (
             close / close.shift(period) - 1
         )
 
@@ -326,10 +486,25 @@ def _momentum_features(df, prefix=""):
         28,
     )
 
-    ema9 = _ema(close, 9)
-    ema21 = _ema(close, 21)
-    ema50 = _ema(close, 50)
-    ema100 = _ema(close, 100)
+    ema9 = _ema(
+        close,
+        9,
+    )
+
+    ema21 = _ema(
+        close,
+        21,
+    )
+
+    ema50 = _ema(
+        close,
+        50,
+    )
+
+    ema100 = _ema(
+        close,
+        100,
+    )
 
     out[f"{prefix}ema9_distance"] = _safe_div(
         close - ema9,
@@ -366,16 +541,20 @@ def _momentum_features(df, prefix=""):
         close,
     )
 
-    # Momentum acceleration.
     return_1 = close.pct_change(1)
+
     return_3 = close.pct_change(3)
 
-    out[f"{prefix}momentum_acceleration"] = (
+    out[
+        f"{prefix}momentum_acceleration"
+    ] = (
         return_1
         - return_1.shift(3)
     )
 
-    out[f"{prefix}momentum_slope"] = (
+    out[
+        f"{prefix}momentum_slope"
+    ] = (
         return_3
         - return_3.shift(3)
     )
@@ -388,7 +567,10 @@ def _momentum_features(df, prefix=""):
 # ============================================================
 
 def _volatility_features(df, prefix=""):
-    out = pd.DataFrame(index=df.index)
+
+    out = pd.DataFrame(
+        index=df.index
+    )
 
     close = df["close"]
 
@@ -420,6 +602,7 @@ def _volatility_features(df, prefix=""):
         20,
         48,
     ]:
+
         out[
             f"{prefix}volatility_{period}"
         ] = returns.rolling(
@@ -445,7 +628,10 @@ def _volatility_features(df, prefix=""):
 # ============================================================
 
 def _volume_features(df, prefix=""):
-    out = pd.DataFrame(index=df.index)
+
+    out = pd.DataFrame(
+        index=df.index
+    )
 
     volume = df["volume"]
 
@@ -487,7 +673,9 @@ def _volume_features(df, prefix=""):
 
     out[f"{prefix}volume_pressure"] = (
         (close_location - 0.5) * 2
-    ) * out[f"{prefix}volume_ratio"]
+    ) * out[
+        f"{prefix}volume_ratio"
+    ]
 
     return out
 
@@ -497,7 +685,10 @@ def _volume_features(df, prefix=""):
 # ============================================================
 
 def _structure_features(df, prefix=""):
-    out = pd.DataFrame(index=df.index)
+
+    out = pd.DataFrame(
+        index=df.index
+    )
 
     high = df["high"]
     low = df["low"]
@@ -567,15 +758,18 @@ def _structure_features(df, prefix=""):
             min_periods=period,
         ).sum()
 
-    out[f"{prefix}higher_high"] = (
+    out[
+        f"{prefix}higher_high"
+    ] = (
         high > previous_high
     ).astype(int)
 
-    out[f"{prefix}lower_low"] = (
+    out[
+        f"{prefix}lower_low"
+    ] = (
         low < previous_low
     ).astype(int)
 
-    # Expansion of current range relative to recent ranges.
     current_range = (
         high - low
     )
@@ -585,7 +779,9 @@ def _structure_features(df, prefix=""):
         min_periods=20,
     ).mean()
 
-    out[f"{prefix}range_expansion"] = (
+    out[
+        f"{prefix}range_expansion"
+    ] = (
         current_range
         / (average_range + EPS)
     )
@@ -598,23 +794,28 @@ def _structure_features(df, prefix=""):
 # ============================================================
 
 def _base_features(df, prefix):
+
     parts = [
         _candle_features(
             df,
             prefix,
         ),
+
         _momentum_features(
             df,
             prefix,
         ),
+
         _volatility_features(
             df,
             prefix,
         ),
+
         _volume_features(
             df,
             prefix,
         ),
+
         _structure_features(
             df,
             prefix,
@@ -636,30 +837,22 @@ def _aggregate_lower_timeframe(
     target_index,
     prefix,
 ):
-    """
-    Convert completed lower-timeframe candles into features
-    aligned to each 15-minute prediction timestamp.
-
-    The aggregation uses only lower-timeframe candles whose
-    timestamps are strictly before the prediction timestamp.
-
-    This prevents the lower timeframe from leaking information
-    from the future 15-minute candle.
-    """
 
     if df is None or df.empty:
+
         return pd.DataFrame(
             index=target_index
         )
 
-    df = _clean_ohlcv(df)
+    df = _clean_ohlcv(
+        df
+    )
 
     features = _base_features(
         df,
         prefix,
     )
 
-    # Add recent lower-timeframe state.
     close = df["close"]
 
     features[
@@ -683,7 +876,6 @@ def _aggregate_lower_timeframe(
         .mean()
     )
 
-    # Candle rejection statistics.
     lower_rejection = features[
         f"{prefix}long_lower_rejection"
     ]
@@ -706,11 +898,6 @@ def _aggregate_lower_timeframe(
         min_periods=15,
     ).mean()
 
-    # We require STRICTLY earlier observations.
-    #
-    # merge_asof with allow_exact_matches=False ensures that
-    # a candle beginning exactly at the prediction timestamp
-    # is not included.
     features = features.reset_index()
 
     feature_time = features.columns[0]
@@ -756,14 +943,9 @@ def _microstructure_1m(
     df_1m,
     target_index,
 ):
-    """
-    Extra 1-minute information.
-
-    This describes what happened immediately before each
-    15-minute prediction point.
-    """
 
     if df_1m is None or df_1m.empty:
+
         return pd.DataFrame(
             index=target_index
         )
@@ -781,7 +963,6 @@ def _microstructure_1m(
     low = df["low"]
     volume = df["volume"]
 
-    # Very recent momentum.
     for period in [
         1,
         3,
@@ -798,17 +979,17 @@ def _microstructure_1m(
             - 1
         )
 
-    # Immediate acceleration.
     one_minute_return = (
         close.pct_change()
     )
 
-    out["m1_acceleration"] = (
+    out[
+        "m1_acceleration"
+    ] = (
         one_minute_return
         - one_minute_return.shift(3)
     )
 
-    # Recent high/low pressure.
     recent_high = high.shift(1).rolling(
         15,
         min_periods=15,
@@ -819,32 +1000,32 @@ def _microstructure_1m(
         min_periods=15,
     ).min()
 
-    out["m1_distance_recent_high"] = (
-        _safe_div(
-            close - recent_high,
-            close,
-        )
+    out[
+        "m1_distance_recent_high"
+    ] = _safe_div(
+        close - recent_high,
+        close,
     )
 
-    out["m1_distance_recent_low"] = (
-        _safe_div(
-            close - recent_low,
-            close,
-        )
+    out[
+        "m1_distance_recent_low"
+    ] = _safe_div(
+        close - recent_low,
+        close,
     )
 
-    # Volume pressure.
     volume_mean = volume.rolling(
         15,
         min_periods=15,
     ).mean()
 
-    out["m1_volume_ratio_15"] = (
+    out[
+        "m1_volume_ratio_15"
+    ] = (
         volume
         / (volume_mean + EPS)
     )
 
-    # Number of bullish/bearish candles recently.
     bullish = (
         df["close"] > df["open"]
     ).astype(float)
@@ -853,33 +1034,33 @@ def _microstructure_1m(
         df["close"] < df["open"]
     ).astype(float)
 
-    out["m1_bullish_ratio_15"] = (
-        bullish.rolling(
-            15,
-            min_periods=15,
-        ).mean()
-    )
+    out[
+        "m1_bullish_ratio_15"
+    ] = bullish.rolling(
+        15,
+        min_periods=15,
+    ).mean()
 
-    out["m1_bearish_ratio_15"] = (
-        bearish.rolling(
-            15,
-            min_periods=15,
-        ).mean()
-    )
+    out[
+        "m1_bearish_ratio_15"
+    ] = bearish.rolling(
+        15,
+        min_periods=15,
+    ).mean()
 
-    # Net directional pressure.
-    out["m1_directional_pressure"] = (
+    out[
+        "m1_directional_pressure"
+    ] = (
         out["m1_bullish_ratio_15"]
         - out["m1_bearish_ratio_15"]
     )
 
-    # Volatility immediately before prediction.
-    out["m1_volatility_15"] = (
-        one_minute_return.rolling(
-            15,
-            min_periods=15,
-        ).std()
-    )
+    out[
+        "m1_volatility_15"
+    ] = one_minute_return.rolling(
+        15,
+        min_periods=15,
+    ).std()
 
     return _align_features(
         out,
@@ -895,12 +1076,44 @@ def _align_features(
     features,
     target_index,
 ):
+
     if features is None or features.empty:
+
         return pd.DataFrame(
             index=target_index
         )
 
     features = features.copy()
+
+    # --------------------------------------------------------
+    # Ensure both sides use DatetimeIndex.
+    # --------------------------------------------------------
+
+    if not isinstance(
+        target_index,
+        pd.DatetimeIndex,
+    ):
+
+        target_index = pd.DatetimeIndex(
+            pd.to_datetime(
+                target_index,
+                errors="coerce",
+                utc=True,
+            ).tz_localize(None)
+        )
+
+    if not isinstance(
+        features.index,
+        pd.DatetimeIndex,
+    ):
+
+        features.index = pd.DatetimeIndex(
+            pd.to_datetime(
+                features.index,
+                errors="coerce",
+                utc=True,
+            ).tz_localize(None)
+        )
 
     features = features[
         ~features.index.duplicated(
@@ -943,6 +1156,7 @@ def _align_features(
     )
 
     if right_time in merged.columns:
+
         merged = merged.drop(
             columns=[right_time]
         )
@@ -958,13 +1172,9 @@ def _prepare_4h_context(
     df_15m,
     df_4h,
 ):
-    """
-    Attach only COMPLETED 4H information.
-
-    The currently building 4H candle is never used.
-    """
 
     if df_4h is None or df_4h.empty:
+
         return pd.DataFrame(
             index=df_15m.index
         )
@@ -994,58 +1204,64 @@ def _prepare_4h_context(
         100,
     )
 
-    features["htf_return_1"] = (
-        close.pct_change(1)
-    )
+    features[
+        "htf_return_1"
+    ] = close.pct_change(1)
 
-    features["htf_return_3"] = (
-        close.pct_change(3)
-    )
+    features[
+        "htf_return_3"
+    ] = close.pct_change(3)
 
-    features["htf_return_6"] = (
-        close.pct_change(6)
-    )
+    features[
+        "htf_return_6"
+    ] = close.pct_change(6)
 
-    features["htf_rsi"] = _rsi(
+    features[
+        "htf_rsi"
+    ] = _rsi(
         close,
         14,
     )
 
-    features["htf_ema20_distance"] = (
-        _safe_div(
-            close - ema20,
-            close,
-        )
+    features[
+        "htf_ema20_distance"
+    ] = _safe_div(
+        close - ema20,
+        close,
     )
 
-    features["htf_ema50_distance"] = (
-        _safe_div(
-            close - ema50,
-            close,
-        )
+    features[
+        "htf_ema50_distance"
+    ] = _safe_div(
+        close - ema50,
+        close,
     )
 
-    features["htf_ema100_distance"] = (
-        _safe_div(
-            close - ema100,
-            close,
-        )
+    features[
+        "htf_ema100_distance"
+    ] = _safe_div(
+        close - ema100,
+        close,
     )
 
-    features["htf_ema20_50_spread"] = (
-        _safe_div(
-            ema20 - ema50,
-            close,
-        )
+    features[
+        "htf_ema20_50_spread"
+    ] = _safe_div(
+        ema20 - ema50,
+        close,
     )
 
-    features["htf_trend_up"] = (
+    features[
+        "htf_trend_up"
+    ] = (
         (close > ema20)
         & (ema20 > ema50)
         & (ema50 > ema100)
     ).astype(int)
 
-    features["htf_trend_down"] = (
+    features[
+        "htf_trend_down"
+    ] = (
         (close < ema20)
         & (ema20 < ema50)
         & (ema50 < ema100)
@@ -1056,14 +1272,18 @@ def _prepare_4h_context(
         14,
     )
 
-    features["htf_atr_pct"] = (
-        _safe_div(
-            htf_atr,
-            close,
-        )
+    features[
+        "htf_atr_pct"
+    ] = _safe_div(
+        htf_atr,
+        close,
     )
 
-    # Use ONLY the previous completed 4H candle.
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Only the previous completed 4H candle is used.
+    # --------------------------------------------------------
+
     features = features.shift(1)
 
     return _align_features(
@@ -1076,7 +1296,10 @@ def _prepare_4h_context(
 # 15M PRIMARY FEATURES
 # ============================================================
 
-def _primary_15m_features(df_15m):
+def _primary_15m_features(
+    df_15m
+):
+
     return _base_features(
         df_15m,
         "m15_",
@@ -1092,12 +1315,6 @@ def _cross_timeframe_features(
     df_5m,
     df_15m,
 ):
-    """
-    Compare momentum across timeframes.
-
-    These features attempt to capture whether lower timeframe
-    movement agrees with the primary 15-minute structure.
-    """
 
     target_index = df_15m.index
 
@@ -1120,9 +1337,11 @@ def _cross_timeframe_features(
             target_index,
         )
 
-        out["cross_m1_price"] = (
-            m1["m1_close"]
-        )
+        out[
+            "cross_m1_price"
+        ] = m1[
+            "m1_close"
+        ]
 
     if (
         df_5m is not None
@@ -1139,22 +1358,36 @@ def _cross_timeframe_features(
             target_index,
         )
 
-        out["cross_m5_price"] = (
-            m5["m5_close"]
-        )
+        out[
+            "cross_m5_price"
+        ] = m5[
+            "m5_close"
+        ]
 
-    primary_close = df_15m["close"]
+    primary_close = df_15m[
+        "close"
+    ]
 
     if "cross_m1_price" in out.columns:
-        out["m1_vs_m15"] = _safe_div(
-            out["cross_m1_price"]
+
+        out[
+            "m1_vs_m15"
+        ] = _safe_div(
+            out[
+                "cross_m1_price"
+            ]
             - primary_close,
             primary_close,
         )
 
     if "cross_m5_price" in out.columns:
-        out["m5_vs_m15"] = _safe_div(
-            out["cross_m5_price"]
+
+        out[
+            "m5_vs_m15"
+        ] = _safe_div(
+            out[
+                "cross_m5_price"
+            ]
             - primary_close,
             primary_close,
         )
@@ -1172,39 +1405,26 @@ def build_features(
     df_1m=None,
     df_5m=None,
 ):
-    """
-    Build the complete multi-timeframe feature matrix.
 
-    Parameters
-    ----------
-    df_15m:
-        Primary 15-minute OHLCV data.
-
-    df_4h:
-        Completed/historical 4-hour OHLCV data.
-
-    df_1m:
-        1-minute OHLCV data.
-
-    df_5m:
-        5-minute OHLCV data.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Feature matrix indexed by 15-minute timestamps.
-    """
+    # --------------------------------------------------------
+    # Validate column structure first.
+    # --------------------------------------------------------
 
     _validate_ohlcv(
         df_15m,
         "15m",
     )
 
+    # --------------------------------------------------------
+    # CLEANING now also converts timestamps.
+    # --------------------------------------------------------
+
     df_15m = _clean_ohlcv(
         df_15m
     )
 
     if df_4h is not None:
+
         _validate_ohlcv(
             df_4h,
             "4h",
@@ -1215,6 +1435,7 @@ def build_features(
         )
 
     if df_1m is not None:
+
         _validate_ohlcv(
             df_1m,
             "1m",
@@ -1225,6 +1446,7 @@ def build_features(
         )
 
     if df_5m is not None:
+
         _validate_ohlcv(
             df_5m,
             "5m",
@@ -1313,7 +1535,6 @@ def build_features(
         axis=1,
     )
 
-    # Remove duplicate columns defensively.
     features = features.loc[
         :,
         ~features.columns.duplicated()
@@ -1335,20 +1556,19 @@ def build_target(
     df_15m,
     neutral_threshold=0.0015,
 ):
-    """
-    Direction of the NEXT 15-minute candle.
-
-    0 = bearish
-    1 = neutral
-    2 = bullish
-    """
 
     _validate_ohlcv(
         df_15m,
         "15m",
     )
 
-    close = df_15m["close"]
+    df_15m = _clean_ohlcv(
+        df_15m
+    )
+
+    close = df_15m[
+        "close"
+    ]
 
     next_return = (
         close.shift(-1)
@@ -1387,42 +1607,39 @@ def build_target(
 def build_structure_target(
     df_15m,
 ):
-    """
-    Describes the ACTUAL next 15-minute candle.
-
-    This is deliberately calculated from the next candle,
-    making it a training target rather than an input feature.
-
-    Classes:
-
-        0 = OTHER
-        1 = HAMMER_LIKE
-        2 = SHOOTING_STAR_LIKE
-        3 = DOJI_LIKE
-        4 = STRONG_BULLISH
-        5 = STRONG_BEARISH
-        6 = HANGING_MAN_LIKE
-
-    These labels are geometry-based approximations.
-    The model will learn their historical conditions rather
-    than being told that the pattern guarantees direction.
-    """
 
     _validate_ohlcv(
         df_15m,
         "15m",
     )
 
+    df_15m = _clean_ohlcv(
+        df_15m
+    )
+
     future = df_15m.shift(-1)
 
-    o = future["open"]
-    h = future["high"]
-    l = future["low"]
-    c = future["close"]
+    o = future[
+        "open"
+    ]
+
+    h = future[
+        "high"
+    ]
+
+    l = future[
+        "low"
+    ]
+
+    c = future[
+        "close"
+    ]
 
     candle_range = (
         h - l
-    ).clip(lower=EPS)
+    ).clip(
+        lower=EPS
+    )
 
     body = (
         c - o
@@ -1434,7 +1651,9 @@ def build_structure_target(
             [o, c],
             axis=1,
         ).max(axis=1)
-    ).clip(lower=0)
+    ).clip(
+        lower=0
+    )
 
     lower_wick = (
         pd.concat(
@@ -1442,18 +1661,22 @@ def build_structure_target(
             axis=1,
         ).min(axis=1)
         - l
-    ).clip(lower=0)
+    ).clip(
+        lower=0
+    )
 
     body_pct = (
         body / candle_range
     )
 
     upper_pct = (
-        upper_wick / candle_range
+        upper_wick
+        / candle_range
     )
 
     lower_pct = (
-        lower_wick / candle_range
+        lower_wick
+        / candle_range
     )
 
     bullish = c > o
@@ -1465,7 +1688,10 @@ def build_structure_target(
         dtype="float64",
     )
 
-    # Doji-like.
+    # --------------------------------------------------------
+    # Doji-like
+    # --------------------------------------------------------
+
     doji = (
         body_pct <= 0.10
     )
@@ -1474,7 +1700,10 @@ def build_structure_target(
         doji
     ] = 3
 
-    # Hammer-like.
+    # --------------------------------------------------------
+    # Hammer-like
+    # --------------------------------------------------------
+
     hammer = (
         (lower_wick >= body * 2.0)
         & (upper_wick <= body)
@@ -1486,7 +1715,10 @@ def build_structure_target(
         hammer
     ] = 1
 
-    # Shooting-star-like.
+    # --------------------------------------------------------
+    # Shooting-star-like
+    # --------------------------------------------------------
+
     shooting_star = (
         (upper_wick >= body * 2.0)
         & (lower_wick <= body)
@@ -1498,14 +1730,12 @@ def build_structure_target(
         shooting_star
     ] = 2
 
-    # Strong directional candle.
+    # --------------------------------------------------------
+    # Strong bullish
+    # --------------------------------------------------------
+
     strong_bullish = (
         bullish
-        & (body_pct >= 0.70)
-    )
-
-    strong_bearish = (
-        bearish
         & (body_pct >= 0.70)
     )
 
@@ -1513,12 +1743,23 @@ def build_structure_target(
         strong_bullish
     ] = 4
 
+    # --------------------------------------------------------
+    # Strong bearish
+    # --------------------------------------------------------
+
+    strong_bearish = (
+        bearish
+        & (body_pct >= 0.70)
+    )
+
     structure[
         strong_bearish
     ] = 5
 
-    # Hanging-man-like:
-    # small-ish body, large lower wick, bearish close.
+    # --------------------------------------------------------
+    # Hanging-man-like
+    # --------------------------------------------------------
+
     hanging_man = (
         bearish
         & (lower_wick >= body * 2.0)
@@ -1531,7 +1772,10 @@ def build_structure_target(
         hanging_man
     ] = 6
 
-    # The final row has no future candle.
+    # --------------------------------------------------------
+    # Final candle has no future candle.
+    # --------------------------------------------------------
+
     structure.iloc[-1] = np.nan
 
     return structure.rename(
@@ -1550,20 +1794,6 @@ def prepare_training_data(
     df_5m=None,
     neutral_threshold=0.0015,
 ):
-    """
-    Complete training-data preparation.
-
-    Returns:
-
-        X
-            Multi-timeframe feature matrix.
-
-        y
-            Direction target.
-
-        structure_y
-            Next-candle structure target.
-    """
 
     X = build_features(
         df_15m=df_15m,
@@ -1583,16 +1813,24 @@ def prepare_training_data(
 
     data = X.copy()
 
-    data["target"] = y
+    data[
+        "target"
+    ] = y
 
-    data["structure_target"] = (
-        structure_y
-    )
+    data[
+        "structure_target"
+    ] = structure_y
 
+    # --------------------------------------------------------
     # Last candle has no known future candle.
+    # --------------------------------------------------------
+
     data = data.iloc[:-1]
 
+    # --------------------------------------------------------
     # Features must exist before training.
+    # --------------------------------------------------------
+
     data = data.dropna(
         subset=X.columns
     )
