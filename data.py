@@ -4,10 +4,7 @@ import pandas as pd
 
 
 # ============================================================
-# NextCandle AI — Bybit Market Data Engine V2
-# Primary market: Bybit USDT Perpetual
-# Primary timeframe: 15 minutes
-# Higher timeframe: 4 hours
+# NextCandle AI — BYBIT DATA ENGINE V2
 # ============================================================
 
 BASE_URL = "https://api.bybit.com"
@@ -37,9 +34,6 @@ def _interval_seconds(interval):
 
 
 def _request(url, params, retries=3):
-    """
-    Reliable Bybit HTTP request with retry handling.
-    """
 
     last_error = None
 
@@ -72,7 +66,6 @@ def _request(url, params, retries=3):
             last_error = exc
 
             if attempt < retries - 1:
-
                 time.sleep(
                     1.5 * (attempt + 1)
                 )
@@ -90,11 +83,6 @@ def _fetch_page(
     end_ms,
     limit=1000,
 ):
-    """
-    Fetch one Bybit kline page.
-
-    Bybit returns newest candles first.
-    """
 
     params = {
         "category": CATEGORY,
@@ -105,26 +93,18 @@ def _fetch_page(
         "limit": limit,
     }
 
-    url = (
-        f"{BASE_URL}/v5/market/kline"
-    )
-
     payload = _request(
-        url,
+        f"{BASE_URL}/v5/market/kline",
         params,
     )
 
-    result = payload.get(
+    return payload.get(
         "result",
         {}
-    )
-
-    rows = result.get(
+    ).get(
         "list",
         []
     )
-
-    return rows
 
 
 def fetch_klines(
@@ -132,33 +112,6 @@ def fetch_klines(
     interval="Min15",
     total=1000,
 ):
-    """
-    Download completed Bybit USDT perpetual candles.
-
-    Parameters
-    ----------
-    symbol:
-        Bybit symbol, e.g. CYSUSDT.
-
-    interval:
-        Min15 or Hour4.
-
-    total:
-        Approximate number of completed candles required.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Columns:
-
-        timestamp
-        open
-        high
-        low
-        close
-        volume
-        turnover
-    """
 
     symbol = (
         symbol
@@ -179,60 +132,54 @@ def fetch_klines(
             "total must be at least 100."
         )
 
-    bybit_interval = INTERVALS[
-        interval
-    ]
+    bybit_interval = INTERVALS[interval]
 
     candle_seconds = _interval_seconds(
         interval
     )
 
-    now_ms = int(
-        time.time() * 1000
-    )
-
     # --------------------------------------------------------
-    # IMPORTANT:
-    # End at the beginning of the currently
-    # forming candle so the live candle is excluded.
+    # EXCLUDE CURRENTLY FORMING CANDLE
     # --------------------------------------------------------
 
-    current_period_start_ms = (
-        int(time.time())
-        // candle_seconds
-    ) * candle_seconds * 1000
+    now_seconds = int(time.time())
+
+    current_period_start = (
+        now_seconds // candle_seconds
+    ) * candle_seconds
 
     end_ms = (
-        current_period_start_ms - 1
-    )
+        current_period_start * 1000
+    ) - 1
 
     start_ms = (
         end_ms
-        - (
-            total
-            * candle_seconds
-            * 1000
-        )
+        - total * candle_seconds * 1000
     )
 
     all_rows = []
 
     cursor_end = end_ms
 
-    # Bybit allows a maximum of 1000 candles/page.
-    #
-    # We continue backwards until we have enough data.
+    # --------------------------------------------------------
+    # PAGINATE BACKWARDS
+    # --------------------------------------------------------
+
     while len(all_rows) < total:
+
+        remaining = total - len(all_rows)
+
+        limit = min(
+            1000,
+            remaining + 20,
+        )
 
         rows = _fetch_page(
             symbol=symbol,
             interval=bybit_interval,
             start_ms=start_ms,
             end_ms=cursor_end,
-            limit=min(
-                1000,
-                total - len(all_rows) + 50,
-            ),
+            limit=limit,
         )
 
         if not rows:
@@ -240,26 +187,18 @@ def fetch_klines(
 
         all_rows.extend(rows)
 
-        # Bybit returns newest first.
-        timestamps = [
+        oldest_timestamp = min(
             int(row[0])
             for row in rows
-        ]
-
-        oldest_timestamp = min(
-            timestamps
         )
 
-        next_end = (
-            oldest_timestamp - 1
-        )
+        next_end = oldest_timestamp - 1
 
         if next_end >= cursor_end:
             break
 
         cursor_end = next_end
 
-        # Safety stop.
         if cursor_end < start_ms:
             break
 
@@ -271,67 +210,41 @@ def fetch_klines(
         )
 
     # --------------------------------------------------------
-    # BYBIT KLINE FORMAT
-    #
-    # [0] startTime
-    # [1] open
-    # [2] high
-    # [3] low
-    # [4] close
-    # [5] volume
-    # [6] turnover
+    # PARSE BYBIT KLINES
     # --------------------------------------------------------
 
-    parsed = []
+    records = []
 
     for row in all_rows:
 
         if len(row) < 7:
             continue
 
-        parsed.append(
+        records.append(
             {
                 "timestamp": pd.to_datetime(
                     int(row[0]),
                     unit="ms",
                     utc=True,
                 ),
-                "open": pd.to_numeric(
-                    row[1],
-                    errors="coerce",
-                ),
-                "high": pd.to_numeric(
-                    row[2],
-                    errors="coerce",
-                ),
-                "low": pd.to_numeric(
-                    row[3],
-                    errors="coerce",
-                ),
-                "close": pd.to_numeric(
-                    row[4],
-                    errors="coerce",
-                ),
-                "volume": pd.to_numeric(
-                    row[5],
-                    errors="coerce",
-                ),
-                "turnover": pd.to_numeric(
-                    row[6],
-                    errors="coerce",
-                ),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+                "turnover": float(row[6]),
             }
         )
 
-    if not parsed:
+    if not records:
         raise RuntimeError(
             "Bybit returned unusable candle data."
         )
 
-    df = pd.DataFrame(parsed)
+    df = pd.DataFrame(records)
 
     # --------------------------------------------------------
-    # CLEAN DATA
+    # CLEAN + SORT
     # --------------------------------------------------------
 
     df = (
@@ -370,14 +283,13 @@ def fetch_klines(
         .dropna(
             subset=numeric_columns
         )
-        .reset_index(drop=True)
     )
 
     # --------------------------------------------------------
-    # VALIDATE OHLC
+    # OHLC SANITY CHECK
     # --------------------------------------------------------
 
-    valid_ohlc = (
+    valid = (
         (df["open"] > 0)
         & (df["high"] > 0)
         & (df["low"] > 0)
@@ -389,16 +301,14 @@ def fetch_klines(
         & (df["low"] <= df["close"])
     )
 
-    df = df[
-        valid_ohlc
-    ].copy()
+    df = df[valid].copy()
 
     # --------------------------------------------------------
-    # FINAL PROTECTION AGAINST LIVE CANDLE
+    # SECOND LIVE-CANDLE PROTECTION
     # --------------------------------------------------------
 
     current_period_start = pd.to_datetime(
-        current_period_start_ms,
+        current_period_start * 1000,
         unit="ms",
         utc=True,
     )
@@ -406,10 +316,8 @@ def fetch_klines(
     df = df[
         df["timestamp"]
         < current_period_start
-    ].copy()
+    ]
 
-    # Keep exactly the requested amount,
-    # using the newest completed candles.
     df = (
         df
         .sort_values("timestamp")
@@ -419,9 +327,21 @@ def fetch_klines(
 
     if len(df) < 100:
         raise RuntimeError(
-            "Not enough completed Bybit candle "
-            f"data returned. Got {len(df)}."
+            "Not enough completed Bybit candles. "
+            f"Received {len(df)}."
         )
+
+    # ========================================================
+    # CRITICAL:
+    #
+    # Features.py expects timestamps to be the index.
+    # ========================================================
+
+    df = df.set_index(
+        "timestamp"
+    )
+
+    df.index.name = "timestamp"
 
     return df
 
@@ -429,12 +349,6 @@ def fetch_klines(
 def get_latest_price(
     symbol=DEFAULT_SYMBOL,
 ):
-    """
-    Get the latest Bybit traded price.
-
-    This is informational only.
-    The prediction engine should use completed candles.
-    """
 
     symbol = (
         symbol
@@ -450,23 +364,15 @@ def get_latest_price(
         "symbol": symbol,
     }
 
-    url = (
-        f"{BASE_URL}/v5/market/tickers"
-    )
-
     payload = _request(
-        url,
+        f"{BASE_URL}/v5/market/tickers",
         params,
     )
 
-    result = payload.get(
-        "result",
-        {}
-    )
-
-    rows = result.get(
-        "list",
-        []
+    rows = (
+        payload
+        .get("result", {})
+        .get("list", [])
     )
 
     if not rows:
@@ -474,13 +380,13 @@ def get_latest_price(
             "No Bybit ticker data returned."
         )
 
-    last_price = rows[0].get(
+    price = rows[0].get(
         "lastPrice"
     )
 
-    if last_price is None:
+    if price is None:
         raise RuntimeError(
             "Bybit did not return last price."
         )
 
-    return float(last_price)
+    return float(price)
