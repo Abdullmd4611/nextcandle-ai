@@ -6,8 +6,9 @@ from data import (
     validate_timeframe_data,
 )
 
-from features import (
-    prepare_training_data,
+from building import (
+    prepare_open_training_data,
+    describe_open_training_data,
 )
 
 from model import (
@@ -16,7 +17,7 @@ from model import (
 
 
 # ============================================================
-# NextCandle AI - TRAINING ENGINE V3.1
+# NextCandle AI - CURRENT BUILDING CANDLE TRAINING ENGINE
 #
 # Market:
 #     CYSUSDT.P
@@ -24,8 +25,14 @@ from model import (
 # API symbol:
 #     CYS_USDT
 #
-# Prediction:
-#     NEXT 15-MINUTE CANDLE
+# PREDICTION:
+#     CURRENT 15-MINUTE CANDLE
+#
+# Example:
+#     10:00 candle starts
+#     AI predicts the 10:00-10:15 candle
+#     10:15 candle closes
+#     prediction is compared with actual result
 #
 # Evidence:
 #     1M + 5M + 15M + 4H
@@ -39,8 +46,8 @@ from model import (
 #     Chronological 80/20 split
 #
 # IMPORTANT:
-#     No random train/test split.
-#     The future is never allowed to leak into training.
+#     The target candle's final close/high/low are NEVER
+#     used as prediction features.
 # ============================================================
 
 
@@ -54,9 +61,15 @@ NEUTRAL_THRESHOLD = 0.0015
 
 TRAIN_RATIO = 0.80
 
-MODEL_PATH = "nextcandle_model.joblib"
+# ------------------------------------------------------------
+# IMPORTANT:
+# Use a different filename from the old next-candle model.
+# This prevents us from accidentally overwriting your old model.
+# ------------------------------------------------------------
 
-METRICS_PATH = "training_metrics.json"
+MODEL_PATH = "current_candle_model.joblib"
+
+METRICS_PATH = "current_candle_training_metrics.json"
 
 
 # ============================================================
@@ -351,7 +364,7 @@ def main():
     )
 
     log(
-        "Starting NextCandle AI training pipeline."
+        "STARTING CURRENT-BUILDING CANDLE TRAINING"
     )
 
     log(
@@ -367,11 +380,16 @@ def main():
     )
 
     log(
-        "Prediction: NEXT 15-minute candle"
+        "Prediction: CURRENT 15-minute candle"
     )
 
     log(
         "Evidence: 1M + 5M + 15M + 4H"
+    )
+
+    log(
+        f"Neutral threshold: "
+        f"{NEUTRAL_THRESHOLD * 100:.2f}%"
     )
 
     # ========================================================
@@ -412,39 +430,75 @@ def main():
         )
 
     # ========================================================
-    # BUILD FEATURES + TARGETS
+    # BUILD CURRENT-CANDLE TRAINING DATA
     # ========================================================
 
     log(
-        "Building multi-timeframe features..."
+        "Building CURRENT-CANDLE features..."
+    )
+
+    log(
+        "The model will learn:"
+    )
+
+    log(
+        "START OF CANDLE -> FINAL RESULT OF SAME CANDLE"
     )
 
     (
         X,
         y,
         structure_y,
-    ) = prepare_training_data(
+    ) = prepare_open_training_data(
 
         df_15m=
             market_data["15m"],
 
-        df_4h=
-            market_data["4h"],
+        df_5m=
+            market_data["5m"],
 
         df_1m=
             market_data["1m"],
 
-        df_5m=
-            market_data["5m"],
+        df_4h=
+            market_data["4h"],
 
         neutral_threshold=
             NEUTRAL_THRESHOLD,
     )
 
+    # ========================================================
+    # DATASET INFORMATION
+    # ========================================================
+
+    info = describe_open_training_data(
+        X,
+        y,
+        structure_y,
+    )
+
     log(
-        f"Feature matrix: "
-        f"{X.shape[0]} rows x "
-        f"{X.shape[1]} features"
+        "Current-candle training dataset created."
+    )
+
+    log(
+        f"Training rows available: "
+        f"{info['rows']}"
+    )
+
+    log(
+        f"Feature count: "
+        f"{info['features']}"
+    )
+
+    log(
+        f"Dataset start: "
+        f"{info['start']}"
+    )
+
+    log(
+        f"Dataset end: "
+        f"{info['end']}"
     )
 
     # ========================================================
@@ -458,11 +512,11 @@ def main():
     )
 
     log(
-        "Training dataset validation passed."
+        "Training dataset validation PASSED."
     )
 
     # ========================================================
-    # TARGET DISTRIBUTION
+    # DIRECTION DISTRIBUTION
     # ========================================================
 
     distribution = class_distribution(
@@ -470,7 +524,7 @@ def main():
     )
 
     log(
-        "Direction target distribution:"
+        "CURRENT 15M CANDLE direction distribution:"
     )
 
     for name, values in distribution.items():
@@ -492,7 +546,7 @@ def main():
     )
 
     log(
-        "Next-candle structure distribution:"
+        "CURRENT 15M CANDLE structure distribution:"
     )
 
     for name, values in (
@@ -536,7 +590,7 @@ def main():
     )
 
     # ========================================================
-    # CHECK TRAINING CLASSES
+    # CHECK CLASSES
     # ========================================================
 
     train_classes = sorted(
@@ -572,12 +626,20 @@ def main():
     # CREATE MODEL
     # ========================================================
 
+    log(
+        "Creating current-candle prediction model..."
+    )
+
     model = NextCandleModel(
         model_path=MODEL_PATH
     )
 
+    # ========================================================
+    # TRAIN
+    # ========================================================
+
     log(
-        "Training NextCandle gradient boosting model..."
+        "Training gradient boosting model..."
     )
 
     model.fit(
@@ -590,12 +652,11 @@ def main():
     )
 
     # ========================================================
-    # EVALUATE ON UNSEEN DATA
+    # EVALUATE
     # ========================================================
 
     log(
-        "Evaluating model on unseen "
-        "chronological validation data..."
+        "Evaluating on unseen chronological data..."
     )
 
     metrics = model.evaluate(
@@ -604,7 +665,7 @@ def main():
     )
 
     # ========================================================
-    # PRINT MODEL METRICS
+    # METRICS
     # ========================================================
 
     accuracy = float(
@@ -616,19 +677,35 @@ def main():
     )
 
     log(
-        f"Validation accuracy: "
-        f"{accuracy:.4f}"
+        "================================================"
+    )
+
+    log(
+        "VALIDATION RESULTS"
+    )
+
+    log(
+        "================================================"
+    )
+
+    log(
+        f"Accuracy: "
+        f"{accuracy * 100:.2f}%"
     )
 
     log(
         f"Balanced accuracy: "
-        f"{balanced_accuracy:.4f}"
+        f"{balanced_accuracy * 100:.2f}%"
     )
 
     log(
         f"Log loss: "
         f"{metrics['log_loss']:.4f}"
     )
+
+    # ========================================================
+    # CONFUSION MATRIX
+    # ========================================================
 
     log(
         "Confusion matrix:"
@@ -642,6 +719,10 @@ def main():
         )
     )
 
+    # ========================================================
+    # CLASSIFICATION REPORT
+    # ========================================================
+
     log(
         "Classification report:"
     )
@@ -653,7 +734,7 @@ def main():
     )
 
     # ========================================================
-    # SAVE TRAINED MODEL
+    # SAVE MODEL
     # ========================================================
 
     model.save(
@@ -661,12 +742,15 @@ def main():
     )
 
     log(
-        f"Trained model saved to: "
-        f"{MODEL_PATH}"
+        f"Current-candle model saved to:"
+    )
+
+    log(
+        MODEL_PATH
     )
 
     # ========================================================
-    # SAVE TRAINING METRICS
+    # SAVE METRICS
     # ========================================================
 
     output = {
@@ -675,7 +759,7 @@ def main():
             "NextCandle AI",
 
         "version":
-            "training-v3.1",
+            "current-building-v1",
 
         "symbol":
             SYMBOL,
@@ -684,13 +768,15 @@ def main():
             DISPLAY_SYMBOL,
 
         "prediction":
-            "next_15m_candle",
+            "CURRENT_15M_CANDLE",
+
+        "prediction_definition":
+            "Information available at the start of "
+            "a 15-minute candle is used to predict "
+            "the final result of that same candle.",
 
         "primary_timeframe":
             "15m",
-
-        "higher_timeframe":
-            "4h",
 
         "lower_timeframes":
             [
@@ -698,19 +784,14 @@ def main():
                 "5m",
             ],
 
-        "evidence":
-            [
-                "1m",
-                "5m",
-                "15m",
-                "4h",
-            ],
-
-        "history_15m":
-            HISTORY_15M,
+        "higher_timeframe":
+            "4h",
 
         "neutral_threshold":
             NEUTRAL_THRESHOLD,
+
+        "history_15m":
+            HISTORY_15M,
 
         "train_ratio":
             TRAIN_RATIO,
@@ -724,14 +805,14 @@ def main():
         "feature_count":
             X.shape[1],
 
-        "direction_target_classes":
+        "direction_target":
             {
                 "0": "BEARISH",
                 "1": "NEUTRAL",
                 "2": "BULLISH",
             },
 
-        "structure_target_classes":
+        "structure_target":
             {
                 "0": "OTHER",
                 "1": "HAMMER_LIKE",
@@ -742,10 +823,10 @@ def main():
                 "6": "HANGING_MAN_LIKE",
             },
 
-        "target_distribution":
+        "direction_distribution":
             distribution,
 
-        "structure_target_distribution":
+        "structure_distribution":
             structure_distribution,
 
         "metrics":
@@ -766,8 +847,11 @@ def main():
         )
 
     log(
-        f"Training metrics saved to: "
-        f"{METRICS_PATH}"
+        f"Training metrics saved to:"
+    )
+
+    log(
+        METRICS_PATH
     )
 
     # ========================================================
@@ -779,7 +863,11 @@ def main():
     )
 
     log(
-        "NEXTCANDLE AI TRAINING COMPLETED SUCCESSFULLY"
+        "CURRENT-BUILDING CANDLE TRAINING COMPLETED"
+    )
+
+    log(
+        "================================================"
     )
 
     log(
