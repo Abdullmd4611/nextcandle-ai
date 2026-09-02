@@ -53,10 +53,7 @@ def _normalise_index(df):
     """
     Normalize market-data timestamps.
 
-    The existing data.py pipeline may return OHLCV data
-    with timestamps already stored in the DataFrame index.
-
-    This function safely handles:
+    Handles:
         - DatetimeIndex
         - time column
         - timestamp column
@@ -78,7 +75,6 @@ def _normalise_index(df):
 
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-
         else:
             df.index = df.index.tz_convert("UTC")
 
@@ -101,7 +97,6 @@ def _normalise_index(df):
     for column in possible_time_columns:
 
         if column in df.columns:
-
             time_column = column
             break
 
@@ -136,12 +131,10 @@ def _normalise_index(df):
 
         # Unix milliseconds
         if median_value > 1_000_000_000_000:
-
             unit = "ms"
 
         # Unix seconds
         else:
-
             unit = "s"
 
         df[time_column] = pd.to_datetime(
@@ -183,15 +176,11 @@ def build_current_candle_target(
     """
     Build the target for the SAME 15M candle.
 
-    Unlike the old target:
-
-        close.shift(-1) / close
-
-    this target measures:
+    Target:
 
         current_candle_close / current_candle_open - 1
 
-    Therefore:
+    Classes:
 
         0 = BEARISH
         1 = NEUTRAL
@@ -423,9 +412,22 @@ def _build_open_cross_features(
         and not df_1m.empty
     ):
 
-        m1 = _clean_ohlcv(
+        m1 = _normalise_index(
             df_1m
         )
+
+        m1 = _clean_ohlcv(
+            m1
+        )
+
+        if not _validate_ohlcv(
+            m1,
+            "1m",
+        ):
+
+            raise ValueError(
+                "Invalid 1M OHLCV data."
+            )
 
         m1_close = (
             m1["close"].shift(1)
@@ -452,9 +454,22 @@ def _build_open_cross_features(
         and not df_5m.empty
     ):
 
-        m5 = _clean_ohlcv(
+        m5 = _normalise_index(
             df_5m
         )
+
+        m5 = _clean_ohlcv(
+            m5
+        )
+
+        if not _validate_ohlcv(
+            m5,
+            "5m",
+        ):
+
+            raise ValueError(
+                "Invalid 5M OHLCV data."
+            )
 
         m5_close = (
             m5["close"].shift(1)
@@ -578,7 +593,8 @@ def build_open_features(
     )
 
     if not _validate_ohlcv(
-        df_15m
+        df_15m,
+        "15m",
     ):
 
         raise ValueError(
@@ -602,9 +618,6 @@ def build_open_features(
     #
     # The current target 15M candle is NOT allowed to influence
     # its own prediction.
-    #
-    # Previous completed 15M features are moved onto the target
-    # candle timestamp.
     # --------------------------------------------------------
 
     primary = primary.shift(1)
@@ -629,6 +642,15 @@ def build_open_features(
         df_5m = _clean_ohlcv(
             df_5m
         )
+
+        if not _validate_ohlcv(
+            df_5m,
+            "5m",
+        ):
+
+            raise ValueError(
+                "Invalid 5M OHLCV data."
+            )
 
         five_features = (
             _aggregate_lower_timeframe(
@@ -659,6 +681,15 @@ def build_open_features(
             df_1m
         )
 
+        if not _validate_ohlcv(
+            df_1m,
+            "1m",
+        ):
+
+            raise ValueError(
+                "Invalid 1M OHLCV data."
+            )
+
         one_features = (
             _microstructure_1m(
                 df_1m,
@@ -686,6 +717,15 @@ def build_open_features(
         df_4h = _clean_ohlcv(
             df_4h
         )
+
+        if not _validate_ohlcv(
+            df_4h,
+            "4h",
+        ):
+
+            raise ValueError(
+                "Invalid 4H OHLCV data."
+            )
 
         four_hour_features = (
             _prepare_4h_context(
@@ -764,8 +804,7 @@ def prepare_open_training_data(
          what will THIS candle eventually become?"
 
     X:
-        Information available before/during the start of
-        the target candle.
+        Information available before the target candle starts.
 
     y:
         Final direction of the SAME candle.
